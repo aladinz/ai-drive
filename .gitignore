@@ -1,0 +1,34 @@
+# Models and engine - too big for GitHub
+Models/
+*.gguf
+*.bin
+*.pt
+*.safetensors
+llamafile-0.10.1/
+
+# Virtual environments and Python junk
+.venv/
+.venv-*/
+__pycache__/
+*.pyc
+
+# Logs and local runtime state
+*.log
+*.err
+err.txt
+History/
+WebUI/current_model.txt
+WebUI/current_model_id.txt
+
+# Windows drive junk
+FOUND.000/
+$RECYCLE.BIN/
+System Volume Information/
+
+# Keep code
+!trading_checklist.py
+!aladdin_stock_tools.py
+!serve_webui.py
+!WebUI/
+!app.py
+!start.bat

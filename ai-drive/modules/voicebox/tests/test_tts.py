@@ -1,0 +1,86 @@
+import pytest
+from voicebox.config import load_settings
+from voicebox.tts import TtsEngine, onnx_providers, split_sentences
+
+
+def test_cpu_device_uses_cpu_provider_only():
+    assert onnx_providers("cpu") == ["CPUExecutionProvider"]
+
+
+def test_cuda_device_prefers_cuda_but_keeps_cpu_fallback():
+    # CPU must stay last: a CUDA build on a host with no usable GPU should
+    # degrade to CPU synthesis rather than fail to start.
+    assert onnx_providers("cuda", ["CUDAExecutionProvider", "CPUExecutionProvider"]) == [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider",
+    ]
+
+
+def test_cuda_device_without_cuda_provider_falls_back_to_cpu():
+    # The CPU onnxruntime wheel installed instead of onnxruntime-gpu: requesting
+    # a provider that is not registered raises, so it must not be requested.
+    assert onnx_providers("cuda", ["CPUExecutionProvider"]) == ["CPUExecutionProvider"]
+
+
+def test_split_sentences():
+    out = split_sentences("Hello there. How are you? Fine!  ")
+    assert out == ["Hello there.", "How are you?", "Fine!"]
+
+
+def test_split_single_sentence_no_terminator():
+    assert split_sentences("just one clause") == ["just one clause"]
+
+
+def test_split_preserves_decimals_and_abbreviations():
+    assert split_sentences("Version 3.14 is current. The U.S. release follows.") == [
+        "Version 3.14 is current.",
+        "The U.S. release follows.",
+    ]
+
+
+@pytest.fixture(scope="module")
+def engine():
+    return TtsEngine(load_settings())
+
+
+@pytest.mark.model
+def test_streams_one_chunk_per_sentence(engine):
+    chunks = list(engine.synthesize_stream("Hello there. How are you?"))
+    assert len(chunks) == 2
+    assert all(isinstance(c, bytes) and len(c) > 0 for c in chunks)
+    # int16 PCM => even byte length
+    assert all(len(c) % 2 == 0 for c in chunks)
+
+
+@pytest.mark.model
+def test_empty_text_raises(engine):
+    with pytest.raises(ValueError):
+        list(engine.synthesize_stream("   "))
+
+
+def test_init_with_bad_model_raises_runtime_error(monkeypatch, settings_factory):
+    from voicebox.tts import TtsEngine
+
+    def mock_hf_hub_download(*args, **kwargs):
+        raise ValueError("model not found")
+
+    monkeypatch.setattr("voicebox.tts.hf_hub_download", mock_hf_hub_download)
+    settings = settings_factory(tts_model="invalid/model")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        TtsEngine(settings)
+    assert "Failed to load TTS model" in str(exc_info.value)
+    assert "invalid/model" in str(exc_info.value)
+
+
+def test_list_voice_ids_uses_kokoro_catalog(monkeypatch, settings_factory):
+    from voicebox.tts import TtsEngine
+
+    class FakeKokoro:
+        def get_voices(self):
+            return ["af_bella", "af_heart", "bf_emma"]
+
+    monkeypatch.setattr("voicebox.tts.hf_hub_download", lambda *args, **kwargs: "/tmp/fake")
+    monkeypatch.setattr("voicebox.tts.Kokoro", lambda *args, **kwargs: FakeKokoro())
+    engine = TtsEngine(settings_factory())
+    assert engine.list_voice_ids() == ["af_bella", "af_heart", "bf_emma"]

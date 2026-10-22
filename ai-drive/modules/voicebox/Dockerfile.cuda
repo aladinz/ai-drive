@@ -1,0 +1,72 @@
+# GPU image: STT (faster-whisper / CTranslate2) AND TTS (kokoro-onnx via
+# onnxruntime-gpu) both run on CUDA here. The CPU default image remains
+# Dockerfile. Validate on a real NVIDIA host; CI does not run GPU inference.
+FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV HF_HOME=/models/huggingface
+ENV OMP_NUM_THREADS=4
+ENV MKL_NUM_THREADS=4
+ENV VOICEBOX_DEVICE=cuda
+ENV VOICEBOX_PORT=8790
+
+# STT model, baked at BUILD time.
+#
+# The CPU image ships distil-small.en because that is what a CPU keeps up with.
+# With a GPU the constraint is gone, so this image carries large-v3: markedly
+# better on proper nouns, technical vocabulary and accented speech, and
+# MULTILINGUAL — distil-small.en is English-only and turns other languages into
+# English-shaped nonsense.
+#
+# These must be set BEFORE fetch_models.py: it reads the same env the runtime
+# does, so this is what determines which weights land in the image. The runtime
+# then has HF_HUB_OFFLINE=1, meaning anything not baked here cannot be fetched
+# later — overriding VOICEBOX_STT_MODEL at `docker run` would fail at startup
+# with the model missing from the cache.
+#
+# Revision pinned for reproducible builds, same stance as the CPU default.
+ARG VOICEBOX_STT_MODEL=Systran/faster-whisper-large-v3
+ARG VOICEBOX_STT_MODEL_REVISION=edaa852ec7e145841d8ffdb056a99866b5f0a478
+ENV VOICEBOX_STT_MODEL=${VOICEBOX_STT_MODEL}
+ENV VOICEBOX_STT_MODEL_REVISION=${VOICEBOX_STT_MODEL_REVISION}
+
+# Ubuntu 22.04 ships Python 3.10; voicebox requires 3.11.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-venv \
+    python3.11-dev \
+    ffmpeg \
+    espeak-ng \
+    espeak \
+    curl \
+    && ln -sf /usr/bin/python3.11 /usr/local/bin/python \
+    && ln -sf /usr/bin/python3.11 /usr/local/bin/python3 \
+    && python3.11 -m ensurepip --upgrade \
+    && python3.11 -m pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --system voicebox && useradd --system --gid voicebox --home-dir /app voicebox \
+    && mkdir -p "$HF_HOME" && chown -R voicebox:voicebox /models
+
+WORKDIR /app
+COPY pyproject.toml ./
+COPY src ./src
+# `[gpu]` pulls onnxruntime-gpu, which is what puts Kokoro's ONNX session on
+# CUDA. It ships its own CUDA/cuDNN-linked binaries and REPLACES the CPU
+# onnxruntime wheel that kokoro-onnx depends on, so the order matters: install
+# the extra in the same step rather than layering it on afterwards.
+RUN python -m pip install --no-cache-dir --disable-pip-version-check -e ".[gpu]"
+
+COPY scripts/fetch_models.py ./scripts/fetch_models.py
+USER voicebox
+RUN python scripts/fetch_models.py
+
+ENV HF_HUB_OFFLINE=1
+ENV VOICEBOX_BIND_ADDRESS=0.0.0.0
+ENV VOICEBOX_ALLOW_INSECURE_BIND=true
+
+EXPOSE 8790
+CMD ["python", "-m", "voicebox"]

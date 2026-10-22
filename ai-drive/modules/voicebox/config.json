@@ -1,0 +1,7 @@
+{
+  "name": "voicebox",
+  "endpoint": "http://localhost:8790",
+  "stt": "/v1/audio/transcriptions",
+  "tts": "/v1/audio/speech",
+  "voice": "af_heart"
+}

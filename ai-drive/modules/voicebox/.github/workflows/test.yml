@@ -1,0 +1,12 @@
+name: Test
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    uses: ./.github/workflows/ci-checks.yml

@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Our Family Estate Reference</title>
+  <style>
+    :root {
+      --bg: #0f0f14;
+      --card: #1a1a2e;
+      --accent: #7c3aed;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --border: #2b2b45;
+      --highlight: rgba(124, 58, 237, 0.4);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top, #181824 0%, var(--bg) 45%);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 16px;
+      line-height: 1.6;
+    }
+
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 24px 16px 90px;
+    }
+
+    .hero {
+      margin-bottom: 18px;
+    }
+
+    .hero h1 {
+      margin: 0;
+      font-size: clamp(1.7rem, 3vw, 2.4rem);
+      letter-spacing: 0.2px;
+    }
+
+    .subtitle {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 1.02rem;
+    }
+
+    .welcome {
+      margin-top: 18px;
+      background: rgba(124, 58, 237, 0.08);
+      border: 1px solid rgba(124, 58, 237, 0.55);
+      border-radius: 12px;
+      padding: 14px 16px;
+      color: #ddd6fe;
+    }
+
+    .toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: rgba(15, 15, 20, 0.9);
+      backdrop-filter: blur(6px);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      margin: 18px 0 10px;
+    }
+
+    .search-wrap {
+      position: relative;
+    }
+
+    #searchInput {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid #3b3b62;
+      background: #121223;
+      color: var(--text);
+      padding: 12px 40px 12px 12px;
+      font-size: 1rem;
+      outline: none;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    #searchInput:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.28);
+    }
+
+    #clearSearch {
+      position: absolute;
+      right: 8px;
+      top: 50%;
+      transform: translateY(-50%);
+      border: 0;
+      border-radius: 999px;
+      width: 24px;
+      height: 24px;
+      background: #2a2a49;
+      color: var(--text);
+      cursor: pointer;
+      display: none;
+    }
+
+    .toolbar-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn {
+      border: 1px solid rgba(124, 58, 237, 0.6);
+      background: #221f3a;
+      color: var(--text);
+      border-radius: 10px;
+      padding: 10px 12px;
+      cursor: pointer;
+      font-weight: 600;
+      transition: box-shadow 0.2s ease, border-color 0.2s ease;
+    }
+
+    .btn:hover,
+    .btn:focus-visible {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.22);
+      outline: none;
+    }
+
+    .meta-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin: 6px 2px 16px;
+      flex-wrap: wrap;
+    }
+
+    .toc {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+      margin-bottom: 16px;
+    }
+
+    .toc h2 {
+      margin: 0 0 10px;
+      font-size: 1.1rem;
+    }
+
+    .toc-grid {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 8px;
+    }
+
+    .toc-grid a {
+      display: block;
+      text-decoration: none;
+      color: #d8b4fe;
+      background: #1d1d35;
+      border: 1px solid #313155;
+      border-radius: 10px;
+      padding: 8px 10px;
+      transition: border-color 0.2s ease, transform 0.2s ease;
+    }
+
+    .toc-grid a:hover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
+    }
+
+    .section-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-top: 3px solid var(--accent);
+      border-radius: 12px;
+      margin-bottom: 14px;
+      overflow: hidden;
+      transition: opacity 0.25s ease, transform 0.25s ease, max-height 0.3s ease;
+      max-height: 2200px;
+      opacity: 1;
+    }
+
+    .section-card.is-hidden {
+      opacity: 0;
+      transform: translateY(-6px);
+      max-height: 0;
+      margin-bottom: 0;
+      border-width: 0;
+      overflow: hidden;
+      pointer-events: none;
+    }
+
+    .section-header {
+      width: 100%;
+      text-align: left;
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      padding: 14px 16px;
+      font-size: 1.05rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      cursor: pointer;
+    }
+
+    .section-header:focus-visible {
+      outline: none;
+      box-shadow: inset 0 0 0 2px rgba(124, 58, 237, 0.45);
+    }
+
+    .chevron {
+      transition: transform 0.25s ease;
+      color: #c4b5fd;
+      font-size: 0.95rem;
+    }
+
+    .section-card.is-collapsed .chevron {
+      transform: rotate(-90deg);
+    }
+
+    .section-content {
+      padding: 0 16px 16px;
+      overflow: hidden;
+      max-height: 1600px;
+      transition: max-height 0.3s ease;
+    }
+
+    .section-card.is-collapsed .section-content {
+      max-height: 0;
+      padding-bottom: 0;
+    }
+
+    h3 {
+      margin-top: 14px;
+      margin-bottom: 6px;
+      font-size: 1rem;
+      color: #ddd6fe;
+    }
+
+    ul {
+      margin-top: 6px;
+      padding-left: 20px;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 8px;
+      border: 1px solid #35355a;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid #303054;
+      padding: 10px;
+      text-align: left;
+      vertical-align: top;
+      font-size: 0.95rem;
+    }
+
+    th {
+      background: #22223c;
+      color: #ddd6fe;
+    }
+
+    mark {
+      background: var(--highlight);
+      color: #f8f4ff;
+      padding: 0 2px;
+      border-radius: 3px;
+    }
+
+    .no-results {
+      display: none;
+      margin: 16px 0;
+      border: 1px dashed #4b4b72;
+      border-radius: 12px;
+      padding: 16px;
+      color: var(--muted);
+      text-align: center;
+      background: #17172a;
+    }
+
+    .footer {
+      margin-top: 24px;
+      border-top: 1px solid var(--border);
+      padding-top: 14px;
+      color: var(--muted);
+      font-size: 0.94rem;
+    }
+
+    .footer-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .floating-top {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      z-index: 30;
+      display: none;
+      border: 0;
+      background: var(--accent);
+      color: #fff;
+      border-radius: 999px;
+      padding: 10px 12px;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 10px 24px rgba(124, 58, 237, 0.32);
+    }
+
+    .floating-top:hover {
+      box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.26);
+    }
+
+    @media (max-width: 640px) {
+      .toolbar {
+        grid-template-columns: 1fr;
+      }
+
+      .toolbar-actions {
+        width: 100%;
+      }
+
+      .btn {
+        flex: 1;
+      }
+    }
+
+    @media print {
+      :root {
+        --bg: #ffffff;
+        --card: #ffffff;
+        --text: #000000;
+        --muted: #333333;
+      }
+
+      body {
+        background: #ffffff;
+        color: #000000;
+      }
+
+      .toolbar,
+      .toc,
+      .floating-top,
+      .interactive-only {
+        display: none !important;
+      }
+
+      .section-card {
+        border: 1px solid #bbb;
+        page-break-inside: avoid;
+        break-inside: avoid;
+        box-shadow: none;
+      }
+
+      .section-content {
+        max-height: none !important;
+        padding-bottom: 16px !important;
+      }
+
+      .section-card.is-collapsed .section-content {
+        max-height: none !important;
+      }
+
+      .section-card.is-hidden {
+        display: block !important;
+        opacity: 1 !important;
+        max-height: none !important;
+      }
+
+      .container {
+        max-width: none;
+        padding: 0;
+      }
+
+      a::after {
+        content: " (" attr(href) ")";
+        font-size: 0.8em;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container" id="top">
+    <header class="hero">
+      <h1>Our Family Estate Reference</h1>
+      <p class="subtitle">Everything you need, all in one place</p>
+      <div class="welcome">
+        This document contains all the important information about our family's estate — accounts, policies, contacts, and wishes. Use the search box below to find anything quickly, or browse by section. Everything is right here. Love, Aladdin 💜
+      </div>
+    </header>
+
+    <div class="toolbar interactive-only" aria-label="Search and section controls">
+      <div class="search-wrap">
+        <input id="searchInput" type="text" placeholder="Type to search... (e.g., 'insurance', 'bank', 'attorney')" />
+        <button id="clearSearch" aria-label="Clear search" title="Clear search">×</button>
+      </div>
+      <div class="toolbar-actions">
+        <button class="btn" id="toggleAllBtn" type="button">Collapse All</button>
+        <button class="btn" id="printBtn" type="button">Print This Page</button>
+      </div>
+    </div>
+
+    <div class="meta-row">
+      <div id="resultCount">Showing 10 of 10 sections</div>
+      <div>Tip: Use Ctrl+F for quick browser search too.</div>
+    </div>
+
+    <nav class="toc" aria-label="Table of contents">
+      <h2>Table of Contents</h2>
+      <ul class="toc-grid">
+        <li><a href="#section-a">📋 Wills &amp; Trusts</a></li>
+        <li><a href="#section-b">🛡️ Insurance Policies</a></li>
+        <li><a href="#section-c">🏦 Financial Accounts</a></li>
+        <li><a href="#section-d">🏠 Property &amp; Real Estate</a></li>
+        <li><a href="#section-e">⚖️ Power of Attorney</a></li>
+        <li><a href="#section-f">🏥 Medical Directives</a></li>
+        <li><a href="#section-g">📊 Tax Records</a></li>
+        <li><a href="#section-h">👤 Important Contacts</a></li>
+        <li><a href="#section-i">🔐 Digital Accounts &amp; Access</a></li>
+        <li><a href="#section-j">💜 Final Wishes &amp; Personal Notes</a></li>
+      </ul>
+    </nav>
+
+    <main id="sectionsRoot">
+      <!--
+        EDITING GUIDE:
+        - Update text inside each .section-content block.
+        - Keep headings and section IDs unchanged for TOC links.
+      -->
+
+      <article class="section-card" id="section-a" data-title="Wills & Trusts">
+        <button class="section-header" type="button" aria-expanded="true">
+          <span>📋 Wills &amp; Trusts</span>
+          <span class="chevron">▾</span>
+        </button>
+        <div class="section-content" data-original="">
+          <p><strong>Last Will and Testament</strong> — Executed [DATE]. Original stored at [LOCATION]. Prepared by [ATTORNEY NAME], [PHONE], [EMAIL].</p>
+          <p><strong>Revocable Living Trust</strong> — Executed [DATE]. Original stored at [LOCATION]. Trustee: [NAME]. Successor Trustee: [NAME].</p>
+          <h3>Key Provisions Summary</h3>
+          <ul>
+            <li>[DESCRIBE distribution plan]</li>
+            <li>[DESCRIBE guardianship provisions if applicable]</li>
+            <li>[DESCRIBE special bequests or trust instructions]</li>
+          </ul>
+        </div>
+      </article>
+
+      <article class="section-card" id="section-b" data-title="Insurance Policies">
+        <button class="section-header" type="button" aria-expanded="true">
+          <span>🛡️ Insurance Policies</span>
+          <span class="chevron">▾</span>
+        </button>
+        <div class="section-content" data-original="">
+          <h3>Life Insurance</h3>
+          <p>Policy #: [FILL IN] | Company: [FILL IN] | Phone: [FILL IN] | Agent: [FILL IN] | Coverage: [FILL IN] | Beneficiaries: [FILL IN] | Premium: [FILL IN]</p>
+          <h3>Health Insurance</h3>
+          <p>Policy #: [FILL IN] | Company: [FILL IN] | Phone: [FILL IN] | Agent: [FILL IN] | Coverage: [FILL IN] | Beneficiaries: [N/A or FILL IN] | Premium: [FILL IN]</p>
+          <h3>Home/Property Insurance</h3>
+          <p>Policy #: [FILL IN] | Company: [FILL IN] | Phone: [FILL IN] | Agent: [FILL IN] | Coverage: [FILL IN] | Beneficiaries: [FILL IN] | Premium: [FILL IN]</p>
+          <h3>Auto Insurance</h3>
+          <p>Policy #: [FILL IN] | Company: [FILL IN] | Phone: [FILL IN] | Agent: [FILL IN] | Coverage: [FILL IN] | Beneficiaries: [N/A or FILL IN] | Premium: [FILL IN]</p>
+          <h3>Umbrella Policy</h3>
+          <p>Policy #: [FILL IN] | Company: [FILL IN] | Phone: [FILL IN] | Agent: [FILL IN] | Coverage: [FILL IN] | Beneficiaries: [N/A or FILL IN] | Premium: [FILL IN]</p>
+        </div>
+      </article>
+
+      <article class="section-card" id="section-c" data-title="Financial Accounts">
+        <button class="section-header" type="button" aria-expanded="true">
+          <span>🏦 Financial Accounts</span>
+          <span class="chevron">▾</span>
+        </button>
+        <div class="section-content" data-original="">
+          <h3>Bank Accounts</h3>
+          <p>Institution: [FILL IN] | Account Type: [Checking/Savings] | Account #: [LAST 4] | Primary Contact: [FILL IN] | Online Access Notes: [FILL IN]</p>
+          <h3>Brokerage / Investment</h3>
+          <p>Institution: [FILL IN] | Account Type: [Brokerage/Managed] | Account #: [LAST 4] | Primary Contact: [FILL IN] | Online Access Notes: [FILL IN]</p>
+          <h3>Retirement (401k, IRA)</h3>
+          <p>Institution: [FILL IN] | Account Type: [401k/IRA/Roth] | Account #: [LAST 4] | Primary Contact: [FILL IN] | Online Access Notes: [FILL IN]</p>
+          <h3>Credit Cards</h3>
+          <p>Institution: [FILL IN] | Card Type: [FILL IN] | Account #: [LAST 4] | Primary Contact: [FILL IN] | Online Access Notes: [FILL IN]</p>
+        </div>
+      </article>
+
+      <article class="section-card" id="section-d" data-title="Property & Real Estate">
+        <button class="section-header" type="button" aria-expanded="true">
+          <span>🏠 Property &amp; Real Estate</span>
+          <span class="chevron">▾</span>
+        </button>
+        <div class="section-content" data-original="">
+          <p><strong>Address:</strong> [FILL IN]</p>
+          <p><strong>Purchase Date:</strong> [FILL IN] | <strong>Estimated Value:</strong> [FILL IN]</p>
+          <p><strong>Mortgage Company:</strong> [FILL IN] | <strong>Account #:</strong> [LAST 4] | <strong>Payment Info:</strong> [FILL IN]</p>
+          <p><strong>Deed Location:</strong> [FILL IN]</p>
+          <p><strong>HOA Info (if applicable):</strong> [FILL IN]</p>
+        </div>
+      </article>
+
+      <article class="section-card" id="section-e" data-title="Power of Attorney">
+        <button class="section-header" type="button" aria-expanded="true">
+          <span>⚖️ Power of Attorney</span>
+          <span class="chevron">▾</span>
+        </button>
+        <div class="section-content" data-original="">
+          <h3>Financial POA</h3>
+          <p>Holder: [FILL IN] | Date Executed: [FILL IN] | Scope: [FILL IN]</p>
+          <h3>Healthcare POA / Proxy</h3>
+          <p>Holder: [FILL IN] | Date Executed: [FILL IN] | Scope: [FILL IN]</p>
+          <p><strong>Original Documents Stored At:</strong> [FILL IN]</p>
+        </div>
+      </article>
+
+      <article class="section-card" id="section-f" data-title="Medical Directives">
+        <button class="section-header" type="button" aria-expanded="true">
+          <span>🏥 Medical Directives</span>
+          <span class="chevron">▾</span>
+        </button>
+        <div class="section-content" data-original="">
+          <p><strong>Living Will Details:</strong> [FILL IN]</p>
+          <p><strong>DNR Status (if applicable):</strong> [FILL IN]</p>
+          <p><strong>Organ Donation Preferences:</strong> [FILL IN]</p>
+          <p><strong>Primary Care Physician:</strong> [NAME], [PHONE], [EMAIL]</p>
+          <p><strong>Specialists:</strong> [FILL IN]</p>
+          <p><strong>Pharmacy:</strong> [NAME], [PHONE], [LOCATION]</p>
+        </div>
+      </article>
+
+      <article class="section-card" id="section-g" data-title="Tax Records">
+        <button class="section-header" type="button" aria-expanded="true">
+          <span>📊 Tax Records</span>
+          <span class="chevron">▾</span>
+        </button>
+        <div class="section-content" data-original="">
+          <p><strong>CPA / Tax Preparer:</strong> [NAME], [PHONE], [EMAIL]</p>
+          <p><strong>Prior Returns Stored At:</strong> [FILL IN]</p>
+          <p><strong>Filing Status Notes:</strong> [FILL IN]</p>
+          <p><strong>Tax-related Accounts or Trusts:</strong> [FILL IN]</p>
+        </div>
+      </article>
+
+      <article class="section-card" id="section-h" data-title="Important Contacts">
+        <button class="section-header" type="button" aria-expanded="true">
+          <span>👤 Important Contacts</span>
+          <span class="chevron">▾</span>
+        </button>
+        <div class="section-content" data-original="">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Role</th>
+                <th>Phone</th>
+                <th>Email</th>
+                <th>Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>[FILL IN]</td><td>Estate Attorney</td><td>[FILL IN]</td><td>[FILL IN]</td><td>[FILL IN]</td></tr>
+              <tr><td>[FILL IN]</td><td>Financial Advisor</td><td>[FILL IN]</td><td>[FILL IN]</td><td>[FILL IN]</td></tr>
+              <tr><td>[FILL IN]</td><td>Insurance Agent</td><td>[FILL IN]</td><td>[FILL IN]</td><td>[FILL IN]</td></tr>
+              <tr><td>[FILL IN]</td><td>CPA / Accountant</td><td>[FILL IN]</td><td>[FILL IN]</td><td>[FILL IN]</td></tr>
+              <tr><td>[FILL IN]</td><td>Bank Contact</td><td>[FILL IN]</td><td>[FILL IN]</td><td>[FILL IN]</td></tr>
+              <tr><td>[FILL IN]</td><td>Trusted Family Friend</td><td>[FILL IN]</td><td>[FILL IN]</td><td>[FILL IN]</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="section-card" id="section-i" data-title="Digital Accounts & Access">
+        <button class="section-header" type="button" aria-expanded="true">
+          <span>🔐 Digital Accounts &amp; Access</span>
+          <span class="chevron">▾</span>
+        </button>
+        <div class="section-content" data-original="">
+          <p><strong>Important:</strong> Passwords are stored separately in [LOCATION — e.g., password manager, sealed envelope in safe].</p>
+          <h3>Account Inventory</h3>
+          <ul>
+            <li>Email — Service: [FILL IN], Username/Email: [FILL IN], Access Method: [FILL IN], Notes: [FILL IN]</li>
+            <li>Banking — Service: [FILL IN], Username/Email: [FILL IN], Access Method: [FILL IN], Notes: [FILL IN]</li>
+            <li>Investment Portals — Service: [FILL IN], Username/Email: [FILL IN], Access Method: [FILL IN], Notes: [FILL IN]</li>
+            <li>Insurance Portals — Service: [FILL IN], Username/Email: [FILL IN], Access Method: [FILL IN], Notes: [FILL IN]</li>
+            <li>Social Media — Service: [FILL IN], Username/Email: [FILL IN], Access Method: [FILL IN], Notes: [FILL IN]</li>
+            <li>Cloud Storage — Service: [FILL IN], Username/Email: [FILL IN], Access Method: [FILL IN], Notes: [FILL IN]</li>
+            <li>Subscriptions — Service: [FILL IN], Username/Email: [FILL IN], Access Method: [FILL IN], Notes: [FILL IN]</li>
+          </ul>
+        </div>
+      </article>
+
+      <article class="section-card" id="section-j" data-title="Final Wishes & Personal Notes">
+        <button class="section-header" type="button" aria-expanded="true">
+          <span>💜 Final Wishes &amp; Personal Notes</span>
+          <span class="chevron">▾</span>
+        </button>
+        <div class="section-content" data-original="">
+          <p><strong>Funeral / Memorial Preferences:</strong> [FILL IN]</p>
+          <p><strong>Special Bequests or Personal Items:</strong> [FILL IN]</p>
+          <p><strong>Messages to Family:</strong> [FILL IN]</p>
+          <p><strong>Other Personal Notes:</strong> [FILL IN]</p>
+          <p class="muted">Sample warm note: "Please support one another, stay close, and keep life simple. The most important thing is love and unity."</p>
+        </div>
+      </article>
+
+      <div class="no-results" id="noResults">No results found. Try a different search term.</div>
+    </main>
+
+    <footer class="footer">
+      <div class="footer-row">
+        <div>
+          Last updated: <strong id="lastUpdatedText">[DATE]</strong>
+          <span class="muted">(Update this whenever details change)</span>
+        </div>
+        <div>Made with love for our family 💜</div>
+      </div>
+      <div class="footer-row" style="margin-top: 10px;">
+        <div class="muted">File: estate-reference.html</div>
+        <div>
+          <a href="#top" class="btn" style="text-decoration:none; display:inline-block;">Back to Top</a>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <button class="floating-top" id="floatingTopBtn" type="button" aria-label="Back to top">↑ Top</button>
+
+  <script>
+    (function () {
+      const searchInput = document.getElementById("searchInput");
+      const clearSearchBtn = document.getElementById("clearSearch");
+      const resultCount = document.getElementById("resultCount");
+      const noResults = document.getElementById("noResults");
+      const cards = Array.from(document.querySelectorAll(".section-card"));
+      const toggleAllBtn = document.getElementById("toggleAllBtn");
+      const printBtn = document.getElementById("printBtn");
+      const floatingTopBtn = document.getElementById("floatingTopBtn");
+      const lastUpdatedText = document.getElementById("lastUpdatedText");
+
+      // Store original HTML so highlight reset is reliable.
+      cards.forEach((card) => {
+        const content = card.querySelector(".section-content");
+        content.dataset.original = content.innerHTML;
+      });
+
+      function formatDate(date) {
+        return date.toLocaleDateString(undefined, {
+          year: "numeric",
+          month: "long",
+          day: "numeric"
+        });
+      }
+
+      function setLastUpdated() {
+        const key = "estate_reference_last_updated";
+        let saved = localStorage.getItem(key);
+        if (!saved) {
+          saved = formatDate(new Date());
+          localStorage.setItem(key, saved);
+        }
+        lastUpdatedText.textContent = saved;
+      }
+
+      function resetHighlights() {
+        cards.forEach((card) => {
+          const content = card.querySelector(".section-content");
+          content.innerHTML = content.dataset.original || content.innerHTML;
+        });
+      }
+
+      function escapeRegex(text) {
+        return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      }
+
+      function highlightInElement(element, term) {
+        const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+        const textNodes = [];
+        let node;
+        while ((node = walker.nextNode())) {
+          if (node.nodeValue.trim()) {
+            textNodes.push(node);
+          }
+        }
+
+        const regex = new RegExp(escapeRegex(term), "gi");
+        textNodes.forEach((textNode) => {
+          const text = textNode.nodeValue;
+          if (!regex.test(text)) {
+            return;
+          }
+          regex.lastIndex = 0;
+
+          const frag = document.createDocumentFragment();
+          let lastIndex = 0;
+          let match;
+
+          while ((match = regex.exec(text)) !== null) {
+            const before = text.slice(lastIndex, match.index);
+            if (before) {
+              frag.appendChild(document.createTextNode(before));
+            }
+
+            const mark = document.createElement("mark");
+            mark.textContent = match[0];
+            frag.appendChild(mark);
+
+            lastIndex = match.index + match[0].length;
+          }
+
+          const after = text.slice(lastIndex);
+          if (after) {
+            frag.appendChild(document.createTextNode(after));
+          }
+
+          textNode.parentNode.replaceChild(frag, textNode);
+        });
+      }
+
+      function applySearch() {
+        const term = searchInput.value.trim().toLowerCase();
+        clearSearchBtn.style.display = term ? "inline-grid" : "none";
+
+        resetHighlights();
+
+        let shown = 0;
+        cards.forEach((card) => {
+          const haystack = card.textContent.toLowerCase();
+          const match = !term || haystack.includes(term);
+          card.classList.toggle("is-hidden", !match);
+          if (match) {
+            shown += 1;
+            if (term) {
+              const content = card.querySelector(".section-content");
+              highlightInElement(content, term);
+            }
+          }
+        });
+
+        noResults.style.display = shown === 0 ? "block" : "none";
+        resultCount.textContent = "Showing " + shown + " of " + cards.length + " sections";
+      }
+
+      function setCardExpanded(card, expanded) {
+        card.classList.toggle("is-collapsed", !expanded);
+        const header = card.querySelector(".section-header");
+        header.setAttribute("aria-expanded", expanded ? "true" : "false");
+      }
+
+      function areAllExpanded() {
+        return cards.every((card) => !card.classList.contains("is-collapsed"));
+      }
+
+      function syncToggleAllLabel() {
+        toggleAllBtn.textContent = areAllExpanded() ? "Collapse All" : "Expand All";
+      }
+
+      cards.forEach((card) => {
+        const header = card.querySelector(".section-header");
+        header.addEventListener("click", () => {
+          const isCollapsed = card.classList.contains("is-collapsed");
+          setCardExpanded(card, isCollapsed);
+          syncToggleAllLabel();
+        });
+      });
+
+      toggleAllBtn.addEventListener("click", () => {
+        const expand = !areAllExpanded();
+        cards.forEach((card) => setCardExpanded(card, expand));
+        syncToggleAllLabel();
+      });
+
+      searchInput.addEventListener("input", applySearch);
+      clearSearchBtn.addEventListener("click", () => {
+        searchInput.value = "";
+        applySearch();
+        searchInput.focus();
+      });
+
+      printBtn.addEventListener("click", () => {
+        cards.forEach((card) => setCardExpanded(card, true));
+        syncToggleAllLabel();
+        window.print();
+      });
+
+      floatingTopBtn.addEventListener("click", () => {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      });
+
+      window.addEventListener("scroll", () => {
+        floatingTopBtn.style.display = window.scrollY > 250 ? "inline-block" : "none";
+      }, { passive: true });
+
+      // Initialize UI state.
+      cards.forEach((card) => setCardExpanded(card, true));
+      syncToggleAllLabel();
+      setLastUpdated();
+      applySearch();
+    })();
+  </script>
+</body>
+</html>

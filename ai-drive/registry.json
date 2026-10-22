@@ -1,0 +1,12 @@
+{
+  "modules": [
+    {
+      "name": "voicebox",
+      "path": "modules/voicebox",
+      "config": "modules/voicebox/config.json",
+      "type": "voice",
+      "capabilities": ["stt", "tts"],
+      "start": "modules/voicebox/docker-run.bat"
+    }
+  ]
+}
