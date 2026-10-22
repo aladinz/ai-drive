@@ -442,7 +442,7 @@ def qualify_from_text(text):
     if not market_data:
         return None, None
     t_check = time.perf_counter()
-    qual = qualify_ticker(intent[0], market_data)
+    qual = qualify_ticker(intent[0], market_data, load_settings())
     print(
         f"[TIMING] checklist: {time.perf_counter() - t_check:.1f}s - {qual['status']} {qual['score']}",
         flush=True,
@@ -452,16 +452,42 @@ def qualify_from_text(text):
 
 LLM_TIMEOUT_S = 25
 LLM_MAX_TOKENS = 300
+SETTINGS_PATH = os.path.join(BASE_DIR, "scan_settings.json")
+normalize_settings = None
+try:
+    normalize_settings = import_module("trading_checklist").normalize_settings
+except Exception:
+    pass
 
 
-def trade_levels(data):
-    """Entry/stop/targets computed in code: stop 1-2.5% below entry, T1 >= 1.5R, T2 >= 2.5R."""
+def load_settings():
+    """User stop settings (stop_mode, stop_fixed_pct, atr_mult); defaults if none saved."""
+    saved = {}
+    try:
+        with open(SETTINGS_PATH, encoding="utf-8") as fh:
+            saved = json.load(fh)
+    except (OSError, ValueError):
+        pass
+    return normalize_settings(saved) if normalize_settings else saved
+
+
+def save_settings(new):
+    merged = normalize_settings({**load_settings(), **(new if isinstance(new, dict) else {})})
+    with open(SETTINGS_PATH, "w", encoding="utf-8") as fh:
+        json.dump(merged, fh, indent=2)
+    return merged
+
+
+def trade_levels(data, qual=None):
+    """Entry/stop/targets: taken from the checklist result when available, otherwise
+    a 2% stop with T1 = 1.5R and T2 = 2.5R."""
+    if qual and qual.get("entry_price") and qual.get("stop_price") is not None:
+        return {"entry": qual["entry_price"], "stop": qual["stop_price"],
+                "t1": qual["target1_price"], "t2": qual["target2_price"]}
     entry = data.get("price")
     if not entry:
         return None
-    stop = data.get("stop")
-    if not stop or not 0.01 <= (entry - stop) / entry <= 0.025:
-        stop = entry * 0.98
+    stop = entry * 0.98
     risk = entry - stop
     return {"entry": entry, "stop": stop, "t1": entry + 1.5 * risk, "t2": entry + 2.5 * risk}
 
@@ -469,7 +495,7 @@ def trade_levels(data):
 def quick_trade_reply(candidates, payload, headers, qual, data):
     """One short, time-limited LLM call for commentary. The levels card is built in code,
     so a slow or unreachable model never blocks the answer."""
-    levels = trade_levels(data)
+    levels = trade_levels(data, qual)
     card = f"### {qual['ticker']} — ✓ QUALIFIED {qual['score']}\n\n"
     prompt = qualified_system_prompt(qual)
     if levels:
@@ -524,7 +550,9 @@ def parse_input(text):
 
 
 def _short_reason(check):
-    return f"{check['name']}: {str(check['reason']).split(' (')[0]}"
+    # R/R carries its own full explanation (ATR basis, guard, PASS/FAIL per part).
+    text = check.get("detail") or str(check["reason"]).split(" (")[0]
+    return f"{check['name']}: {text}"
 
 
 def build_trade_setup(qual, data):
@@ -634,7 +662,10 @@ def qualify_and_generate(ticker, candidates=None, headers=None, commentary=False
         market_data = _tools.qualification_data(ticker)
         if not market_data:
             raise RuntimeError("no market data")
-        qual = qualify_ticker(ticker, market_data)
+        qual = qualify_ticker(ticker, market_data, load_settings())
+        cfg = qual.get("settings") or {}
+        print(f"[STOP] {ticker} mode={cfg.get('stop_mode')} fixed={cfg.get('stop_fixed_pct')}% "
+              f"atr_mult={cfg.get('atr_mult')} => stop {qual['stop_pct']}%", flush=True)
         row.update(
             status=qual["status"], score=qual["score"], qualified=qual["qualified"],
             passed=sum(1 for c in qual["checks"] if c["pass"]),
@@ -643,7 +674,7 @@ def qualify_and_generate(ticker, candidates=None, headers=None, commentary=False
             reason="; ".join(_short_reason(c) for c in qual["checks"] if not c["pass"]),
         )
         if qual["qualified"]:
-            row["levels"] = trade_levels(market_data)
+            row["levels"] = trade_levels(market_data, qual)
             row["trade_setup"] = (
                 llm_setup_notes(candidates, headers, qual, market_data) if commentary
                 else build_trade_setup(qual, market_data)
@@ -687,8 +718,8 @@ def qualified_system_prompt(qual):
         "and never use a ticker from a tool-call name. "
         f"Passed: {passed}. Failed: {failed}. "
         "Only provide entry/stop/target if qualified. "
-        "You must calculate stop loss 1% to 2.5% below entry. Then calculate Target1 at least 1.5x "
-        "stop distance above entry, and Target2 at least 2.5x above. "
+        "Use the stop and targets already computed by the checklist; the stop is 1% to 5% below entry. "
+        "Target1 must be at least 1.5x the stop distance above entry. "
         "If you cannot find levels with those constraints, say R/R fails. "
         "If fail_reasons include critical event (earnings, split, FDA), say DO NOT TRADE."
     )
@@ -917,6 +948,9 @@ class WebUIProxyHandler(SimpleHTTPRequestHandler):
         super().do_OPTIONS()
 
     def do_GET(self):
+        if self.path.split("?")[0] == "/api/settings":
+            self._send_json(200, load_settings())
+            return
         if self.path.startswith("/v1/"):
             self._proxy_request("GET")
             return
@@ -926,7 +960,7 @@ class WebUIProxyHandler(SimpleHTTPRequestHandler):
         if self.path.startswith("/voicebox/v1/"):
             self._proxy_voicebox_request()
             return
-        if self.path.split("?")[0] in ("/api/check", "/api/scan", "/api/setup"):
+        if self.path.split("?")[0] in ("/api/check", "/api/scan", "/api/setup", "/api/settings"):
             self._handle_api()
             return
         if self.path.startswith("/v1/"):
@@ -966,6 +1000,9 @@ class WebUIProxyHandler(SimpleHTTPRequestHandler):
             return
         if not isinstance(data, dict):
             self._send_json(400, {"error": "Expected a JSON object"})
+            return
+        if self.path.split("?")[0] == "/api/settings":
+            self._send_json(200, save_settings(data))
             return
         commentary = bool(data.get("commentary")) or self.path.split("?")[0] == "/api/setup"
         candidates, headers = self._candidates(), self._forward_headers()

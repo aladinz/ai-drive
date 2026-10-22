@@ -446,6 +446,10 @@ html, body {
 #scan-button { width: auto; padding: 0 12px; }
 #scan-account, #scan-risk { flex: 0 0 90px !important; }
 .scan-filters { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.scan-settings { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 8px; font-size: 12px; color: var(--text-secondary); }
+.scan-settings label { display: flex; align-items: center; gap: 6px; }
+.scan-settings select { background: var(--bg-active); color: inherit; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 2px 6px; }
+.scan-settings-note { opacity: .7; }
 .scan-filters .icon-button { width: auto; padding: 0 10px; font-size: 12px; }
 .scan-summary { margin-top: 6px; font-size: 12px; color: var(--text-secondary); }
 .trade-taken { cursor: pointer; }

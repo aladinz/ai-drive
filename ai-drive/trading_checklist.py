@@ -13,7 +13,10 @@ EVENT_WINDOW_TRADING_DAYS = 5
 CRITICAL_EVENT_TYPES = ("earnings", "split", "fda")
 MIN_REWARD_RISK = 1.5
 MIN_STOP_PCT = 1.0
-MAX_STOP_PCT = 2.5
+MAX_STOP_PCT = 5.0
+MIN_ATR_MULT = 1.0
+MAX_ATR_MULT = 1.5
+DEFAULT_SETTINGS = {"stop_mode": "fixed", "stop_fixed_pct": 2.0, "atr_mult": 1.2}
 LARGE_CAP = 100_000_000_000
 SPREAD_FAIL_PCT = 2.0
 FALLBACK_T2_R = 2.5
@@ -113,9 +116,32 @@ def _volume(d):
     avg, today = _num(d.get("avg_volume_20d")), _num(d.get("volume"))
     if avg is None or today is None:
         return _missing("VOLUME", "avg_volume_20d", "volume")
-    ok = avg > 500_000 and today > 0.8 * avg
-    value = f"20d avg {avg:,.0f}, today {today:,.0f} ({today / avg * 100:.0f}% of avg)" if avg else f"today {today:,.0f}"
-    return _check("VOLUME", ok, value, "20d avg > 500k and today > 80% of avg" if ok else f"Need 20d avg > 500k and today > 80% of avg ({value})")
+    est, threshold = _intraday_volume(today)
+    ok = avg > 500_000 and est > threshold * avg
+    value = (f"20d avg {avg / 1e6:.1f}M, today {today / 1e6:.2f}M, est full-day {est / 1e6:.2f}M "
+             f"({est / avg * 100:.0f}% of avg, need >{threshold * 100:.0f}%)")
+    need = f"20d avg > 500k and est. volume > {threshold * 100:.0f}% of avg"
+    return _check("VOLUME", ok, value, need if ok else f"Need {need} ({value})")
+
+
+def _eastern_minutes():
+    """Minutes since midnight in US Eastern (market clock); weekend flag."""
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        now = datetime.now()
+    return now.hour * 60 + now.minute, now.weekday() >= 5
+
+
+def _intraday_volume(today):
+    """Project partial-session volume to a full day; lower the bar before 2pm ET."""
+    minutes, weekend = _eastern_minutes()
+    if weekend or minutes < 570 or minutes >= 960:
+        return today, 0.8
+    elapsed = minutes - 570
+    est = today / (elapsed / 390) if elapsed > 0 else today
+    return est, (0.4 if minutes < 840 else 0.8)
 
 
 def _volatility(d):
@@ -182,32 +208,72 @@ def _event(d):
     return _check("EVENT", True, "None", "No earnings/split/FDA event in next 5 trading days")
 
 
-def check_rr(entry, stop, target1, target2=None):
-    """Stop must be 1-2.5% below entry and Target 1 at least 1.5R."""
-    entry, stop, target1, target2 = _num(entry), _num(stop), _num(target1), _num(target2)
-    if not entry or entry <= 0 or not stop or stop <= 0:
-        return _missing("R/R", "entry", "stop")
-    if stop >= entry:
-        return _check("R/R", False, "Stop at or above entry", "Stop must be below entry")
+def normalize_settings(settings=None):
+    """User stop settings: stop_mode 'atr'|'fixed', stop_fixed_pct 1-5, atr_mult 1.5-2.5."""
+    s = settings if isinstance(settings, dict) else {}
+    mode = str(s.get("stop_mode", DEFAULT_SETTINGS["stop_mode"])).lower()
+    fixed = _num(s.get("stop_fixed_pct"))
+    mult = _num(s.get("atr_mult"))
+    return {
+        "stop_mode": mode if mode in ("atr", "fixed") else "atr",
+        "stop_fixed_pct": min(MAX_STOP_PCT, max(MIN_STOP_PCT, fixed if fixed is not None else DEFAULT_SETTINGS["stop_fixed_pct"])),
+        "atr_mult": min(MAX_ATR_MULT, max(MIN_ATR_MULT, mult if mult is not None else DEFAULT_SETTINGS["atr_mult"])),
+    }
+
+
+def calculate_stop(entry, atr, mode="fixed", fixed_pct=2.0, atr_mult=1.2):
+    """Return (stop_pct, stop_price, raw_pct). Fixed mode: fixed_pct; ATR mode: ATR% x multiplier
+    (falls back to fixed_pct without ATR). Clamped to the 1-5% guardrail; raw_pct is unclamped."""
+    if mode == "fixed" or not atr or not entry:
+        raw_pct = fixed_pct
+    else:
+        raw_pct = (atr / entry) * 100 * atr_mult
+    stop_pct = max(MIN_STOP_PCT, min(MAX_STOP_PCT, raw_pct))
+    return stop_pct, entry * (1 - stop_pct / 100), raw_pct
+
+
+def check_rr(entry, stop_price, target1, atr, user_settings=None, target2=None):
+    """Stop (ATR-multiple or fixed %, guarded to 1-5%) and Target 1 at least 1.5R.
+    The calculated stop is used for validation whenever ATR (or fixed mode) allows it;
+    a provided stop_price is only a fallback when ATR is unavailable in ATR mode."""
+    cfg = normalize_settings(user_settings)
+    entry, stop_price, target1, atr, target2 = _num(entry), _num(stop_price), _num(target1), _num(atr), _num(target2)
+    if not entry or entry <= 0:
+        return _missing("R/R", "entry")
+    mode, mult = cfg["stop_mode"], cfg["atr_mult"]
+    if mode == "fixed" or (atr and atr > 0):
+        stop_pct, stop_price, raw_pct = calculate_stop(entry, atr or 0, mode, cfg["stop_fixed_pct"], mult)
+        if mode == "fixed":
+            basis = f"fixed {cfg['stop_fixed_pct']:.1f}%"
+        else:
+            basis = f"ATR ${atr:.2f} x {mult:g} = {raw_pct:.2f}%"
+        if abs(raw_pct - stop_pct) > 1e-9:
+            basis += f" clamped to {stop_pct:.2f}%"
+    elif stop_price and 0 < stop_price < entry:
+        stop_pct = (entry - stop_price) / entry * 100
+        basis = "provided stop, no ATR"
+    else:
+        return _missing("R/R", "atr", "stop")
     if target1 is None:
         return _missing("R/R", "target1")
-    risk = entry - stop
-    stop_pct = risk / entry * 100
+    risk = entry - stop_price
     rr_t1 = (target1 - entry) / risk
     rr_t2 = (target2 - entry) / risk if target2 is not None else None
     stop_ok = MIN_STOP_PCT <= stop_pct <= MAX_STOP_PCT
     rr_ok = rr_t1 >= MIN_REWARD_RISK
-    t2_text = f"{rr_t2:.2f}R" if rr_t2 is not None else "n/a"
-    value = f"Stop {stop_pct:.2f}% (need 1-2.5%), T1 {rr_t1:.2f}R (need >=1.5R), T2 {t2_text}"
-    problems = []
-    if not stop_ok:
-        problems.append(f"Stop {stop_pct:.2f}% outside 1-2.5%")
-    if not rr_ok:
-        problems.append(f"R/R {rr_t1:.2f}R < 1.5R")
+    t2_text = f", T2 {rr_t2:.2f}R" if rr_t2 is not None else ""
+    detail = (
+        f"Stop {stop_pct:.2f}% ({basis}, {'in' if stop_ok else 'outside'} 1-5% guard) {'PASS' if stop_ok else 'FAIL'}, "
+        f"T1 {rr_t1:.2f}R >={MIN_REWARD_RISK:g}R {'PASS' if rr_ok else 'FAIL'}{t2_text}"
+    )
     passed = stop_ok and rr_ok
     return {
-        **_check("R/R", passed, value, "Stop 1-2.5% and T1 >= 1.5R" if passed else "; ".join(problems) + f" ({value})"),
+        **_check("R/R", passed, detail, detail),
+        "detail": detail,
         "stop_pct": stop_pct,
+        "stop_price": stop_price,
+        "atr_mult": mult if mode == "atr" else None,
+        "mode": mode,
         "rr_t1": rr_t1,
         "rr_t2": rr_t2,
         "stop_ok": stop_ok,
@@ -216,15 +282,20 @@ def check_rr(entry, stop, target1, target2=None):
 
 
 def _risk_reward(d):
-    return check_rr(d.get("price"), d.get("stop"), d.get("target1", d.get("resistance")), d.get("target2"))
+    return check_rr(
+        d.get("price"), d.get("stop"), d.get("target1", d.get("resistance")),
+        d.get("atr"), d.get("_settings"), d.get("target2"),
+    )
 
 
 _CHECKS = (_trend, _volume, _volatility, _momentum, _liquidity, _structure, _event, _risk_reward)
 
 
-def qualify_ticker(ticker, market_data):
-    """Run the 8-point checklist; PASS needs at least 6 passing checks."""
-    data = market_data if isinstance(market_data, dict) else {}
+def qualify_ticker(ticker, market_data, settings=None):
+    """Run the 8-point checklist; PASS needs at least 6 passing checks.
+    settings: {stop_mode, stop_fixed_pct, atr_mult} (see normalize_settings)."""
+    data = dict(market_data) if isinstance(market_data, dict) else {}
+    data["_settings"] = normalize_settings(settings)
     checks = []
     for fn in _CHECKS:
         try:
@@ -234,7 +305,7 @@ def qualify_ticker(ticker, market_data):
     passed = sum(1 for c in checks if c["pass"])
     by_name = {c["name"]: c for c in checks}
     rr = by_name.get("R/R", {})
-    # Critical: an upcoming event, or a stop outside the 1-2.5% risk band, vetoes the 6/8 score.
+    # Critical: an upcoming event, or a stop outside the 1-5% guard, vetoes the 6/8 score.
     critical_fails = []
     if "EVENT" in by_name and not by_name["EVENT"]["pass"]:
         critical_fails.append("EVENT: " + by_name["EVENT"]["reason"])
@@ -285,4 +356,5 @@ def qualify_ticker(ticker, market_data):
         "target2_price": target2,
         "rr_t1": rr_t1,
         "rr_t2": rr_t2,
+        "settings": data["_settings"],
     }

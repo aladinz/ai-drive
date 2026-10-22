@@ -298,8 +298,49 @@ function setScanProgress(done, total, active) {
     active ? `Scanning ${Math.min(done + 1, total)}/${total}...` : `Scanned ${done}/${total}`;
 }
 
-async function runScan() {
-  const tickers = parseTickers(tickerInput.value);
+const setMode = document.getElementById("set-mode");
+const setFixed = document.getElementById("set-fixed");
+const setAtr = document.getElementById("set-atr");
+
+function syncSettingsUi() {
+  document.getElementById("set-fixed-val").textContent = Number(setFixed.value).toFixed(1);
+  document.getElementById("set-atr-val").textContent = Number(setAtr.value).toFixed(1);
+  document.getElementById("set-fixed-wrap").style.display = setMode.value === "fixed" ? "" : "none";
+  document.getElementById("set-atr-wrap").style.display = setMode.value === "atr" ? "" : "none";
+}
+
+let settingsTimer = null;
+function saveScanSettings() {
+  syncSettingsUi();
+  clearTimeout(settingsTimer);
+  settingsTimer = setTimeout(async () => {
+    try {
+      await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          stop_mode: setMode.value,
+          stop_fixed_pct: parseFloat(setFixed.value),
+          atr_mult: parseFloat(setAtr.value)
+        })
+      });
+      if (scanResults.length && !scanButton.disabled) runScan(scanResults.map(r => r.ticker));
+    } catch (err) { /* ignore */ }
+  }, 500);
+}
+
+if (setMode && setFixed && setAtr) {
+  fetch("/api/settings").then(r => r.json()).then(s => {
+    setMode.value = s.stop_mode;
+    setFixed.value = s.stop_fixed_pct;
+    setAtr.value = s.atr_mult;
+    syncSettingsUi();
+  }).catch(syncSettingsUi);
+  [setMode, setFixed, setAtr].forEach(el => el.addEventListener("input", saveScanSettings));
+}
+
+async function runScan(tickerList) {
+  const tickers = Array.isArray(tickerList) ? tickerList : parseTickers(tickerInput.value);
   if (!tickers.length || scanButton.disabled) return;
   scanButton.disabled = true;
   scanTotal = tickers.length;
@@ -329,7 +370,7 @@ async function runScan() {
 }
 
 if (scanButton && tickerInput) {
-  scanButton.addEventListener("click", runScan);
+  scanButton.addEventListener("click", () => runScan());
   tickerInput.addEventListener("keydown", e => {
     if (e.key === "Enter") { e.preventDefault(); runScan(); }
   });

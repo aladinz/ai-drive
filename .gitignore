@@ -19,6 +19,7 @@ err.txt
 History/
 WebUI/current_model.txt
 WebUI/current_model_id.txt
+WebUI/scan_settings.json
 
 # Windows drive junk
 FOUND.000/
