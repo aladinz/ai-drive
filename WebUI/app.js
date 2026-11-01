@@ -78,6 +78,116 @@ let scanFilter = "all";
 let scanTotal = 0;
 const scanExpanded = new Set();
 const scanLoading = new Set();
+const tradeWidgets = new Map();
+const scalingUpdates = new Map();
+let tradingViewLoader;
+
+function loadTradingView() {
+  if (window.TradingView?.widget) return Promise.resolve();
+  if (!tradingViewLoader) {
+    tradingViewLoader = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "https://s3.tradingview.com/tv.js";
+      script.onload = () => window.TradingView?.widget
+        ? resolve()
+        : reject(new Error("TradingView widget API is unavailable"));
+      script.onerror = () => reject(new Error("TradingView chart script failed to load"));
+      document.head.appendChild(script);
+    });
+  }
+  return tradingViewLoader;
+}
+
+function destroyTradeWidgets() {
+  tradeWidgets.forEach(widget => {
+    if (typeof widget.remove === "function") {
+      try { widget.remove(); } catch (error) { console.error("Could not remove TradingView chart:", error); }
+    }
+  });
+  tradeWidgets.clear();
+}
+
+function showChartError(container, ticker, message) {
+  console.error(message);
+  const frame = document.createElement("iframe");
+  frame.className = "trade-chart-fallback";
+  frame.src = `https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(ticker)}&interval=D&theme=dark&hidesidetoolbar=1&style=1`;
+  frame.loading = "lazy";
+  frame.title = `${ticker} chart`;
+  const note = document.createElement("div");
+  note.className = "chart-status";
+  note.textContent = "Price-level lines are unavailable; the levels are listed above.";
+  container.replaceChildren(frame, note);
+}
+
+function initializeTradeCharts() {
+  const containers = [...document.querySelectorAll(".trade-chart[data-ticker]")];
+  if (!containers.length) return;
+  loadTradingView().then(() => {
+    containers.forEach(container => {
+      if (!container.isConnected) return;
+      const ticker = container.dataset.ticker;
+      const row = scanResults.find(result => result.ticker === ticker);
+      if (!row?.chart) return;
+      const id = container.id;
+      try {
+        const widget = new window.TradingView.widget({
+          symbol: row.chart.ticker,
+          interval: "D",
+          timezone: "Etc/UTC",
+          theme: "dark",
+          style: "1",
+          locale: "en",
+          autosize: true,
+          allow_symbol_change: false,
+          hide_side_toolbar: false,
+          container_id: id
+        });
+        tradeWidgets.set(id, widget);
+        widget.onChartReady(() => {
+          try {
+            const chart = typeof widget.activeChart === "function"
+              ? widget.activeChart()
+              : widget.chart();
+            if (typeof chart.createShape !== "function") {
+              throw new Error("TradingView chart drawing API is unavailable");
+            }
+            const visibleRange = chart.getVisibleRange?.();
+            const time = visibleRange?.to || Math.floor(Date.now() / 1000);
+            const levels = [
+              ["Entry", row.chart.entry, "#00ff88"],
+              ["Stop", row.chart.stop, "#ff4444"],
+              ["TP1", row.chart.tp1, "#00ff88"],
+              ["TP2", row.chart.tp2, "#ffaa00"],
+              ["TP3", row.chart.tp3, "#aa88ff"]
+            ];
+            levels.forEach(([label, price, color]) => {
+              chart.createShape(
+                { time, price },
+                {
+                  shape: "horizontal_line",
+                  lock: true,
+                  disableSelection: true,
+                  disableSave: true,
+                  text: `${label} $${price.toFixed(2)}`,
+                  overrides: { linecolor: color, linewidth: 2, showLabel: true, showPrice: true }
+                }
+              );
+            });
+          } catch (error) {
+            showChartError(container, ticker, `Could not draw ${ticker} price levels: ${error}`);
+          }
+        });
+      } catch (error) {
+        showChartError(container, ticker, `Could not create ${ticker} chart: ${error}`);
+      }
+    });
+  }).catch(error => {
+    containers.forEach(container => {
+      if (container.isConnected) showChartError(container, container.dataset.ticker, error);
+    });
+  });
+}
 
 function parseTickers(input) {
   const seen = new Set();
@@ -98,7 +208,7 @@ function scanRowHtml(r) {
     ? `<span class="qual FAIL">! ERROR</span>`
     : `<span class="qual ${ok ? "PASS" : "FAIL"}">${ok ? "✓" : "✗"} ${escapeHtml(r.score)}</span>`;
   const pct = typeof r.stop_pct === "number" ? `${r.stop_pct.toFixed(2)}%` : "n/a";
-  const rr = typeof r.rr_t1 === "number" ? `${r.rr_t1.toFixed(2)}R` : "n/a";
+  const rr = typeof r.rr_t2 === "number" ? `${r.rr_t2.toFixed(2)}R` : "n/a";
   const time = typeof r.elapsed === "number" ? `${r.elapsed.toFixed(1)}s` : "—";
   const expandable = ok && r.trade_setup;
   const open = expandable && scanExpanded.has(r.ticker);
@@ -122,36 +232,127 @@ function renderScalingPlan(plan, ticker) {
   if (!plan) return "";
   const m = v => `$${v.toFixed(2)}`;
   const remaining1 = plan.total_shares - plan.tp1.shares;
+  const pct = target => `+${((target.price / plan.entry - 1) * 100).toFixed(2)}%`;
+  const tp1Choices = [1.5, 2.0, 2.5]
+    .filter(mult => mult < plan.tp2.mult || mult === plan.tp1.mult)
+    .map(mult =>
+    `<option value="${mult}" ${mult === plan.tp1.mult ? "selected" : ""}>${mult.toFixed(1)}x ATR</option>`
+  ).join("");
   return `
   <div class="scaling-plan">
     <div class="scaling-header">
-      Swing Scaling Plan: ${escapeHtml(ticker)} (LONG)<br>
-      Total Shares: ${plan.total_shares} @ ${m(plan.entry)} | Initial SL: ${m(plan.stop)} | ATR ${m(plan.atr)}
+      <h3>Multi-Target Scaling Engine (Swing Scale-Outs) <span class="badge-pro">PRO SWING STRATEGY</span></h3>
+      <p>${escapeHtml(ticker)} LONG · ${plan.total_shares} shares @ ${m(plan.entry)} · Initial stop ${m(plan.stop)} · ATR ${m(plan.atr)}</p>
+      <button class="copy-scaling" type="button" data-copy-scaling="${escapeHtml(ticker)}">Copy Scaling Plan</button>
     </div>
-    <div class="tp tp1">
-      <b>Target 1 (Lock &amp; Protect):</b><br>
-      • Sell ${plan.tp1.shares} shares (${plan.tp1.pct}%) at ${m(plan.tp1.price)} (${plan.tp1.mult}x ATR)<br>
-      • Profit: +${m(plan.tp1.profit)}<br>
-      • <span class="action">ACTION: Move Stop Loss on remaining ${remaining1} shares to BREAKEVEN (${m(plan.entry)})</span>
+    <div class="scaling-grid">
+      <section class="target-card t1">
+        <div class="target-title">TARGET 1: LOCK &amp; PROTECT <span class="size-badge">${plan.tp1.pct}% size</span></div>
+        <div class="target-price">${m(plan.tp1.price)} <span class="pct">${pct(plan.tp1)}</span></div>
+        <label class="target-row">ATR multiple: <select data-scaling-mult="tp1" data-ticker="${escapeHtml(ticker)}">${tp1Choices}</select></label>
+        <div>Exit volume: <b>${plan.tp1.shares} shares</b></div>
+        <div class="profit">Profit at TP1: +${m(plan.tp1.profit)}</div>
+        <div class="rule">Move stop on remaining shares to breakeven (${m(plan.entry)}).</div>
+      </section>
+      <section class="target-card t2">
+        <div class="target-title">TARGET 2: CORE SWING <span class="size-badge">${plan.tp2.pct}% size</span></div>
+        <div class="target-price">${m(plan.tp2.price)} <span class="pct">${pct(plan.tp2)}</span></div>
+        <div>ATR multiple: ${plan.tp2.mult}x</div>
+        <div>Exit volume: <b>${plan.tp2.shares} shares</b></div>
+        <div class="profit">Profit at TP2: +${m(plan.tp2.profit)}</div>
+        <div class="rule">Trail stop on the ${plan.tp3.shares} runner shares to TP1 (${m(plan.tp1.price)}).</div>
+      </section>
+      <section class="target-card t3">
+        <div class="target-title">TARGET 3: TRAILING RUNNER <span class="size-badge">${plan.tp3.pct}% size</span></div>
+        <div class="target-price">${m(plan.tp3.price)} <span class="pct">${pct(plan.tp3)}</span></div>
+        <div>ATR multiple: ${plan.tp3.mult}x</div>
+        <div>Exit volume: <b>${plan.tp3.shares} shares</b></div>
+        <div class="profit">Projected profit: +${m(plan.tp3.profit)}</div>
+        <div class="rule">Trail with a 1.5x ATR band or daily 20 EMA.</div>
+      </section>
     </div>
-    <div class="tp tp2">
-      <b>Target 2 (Core Swing):</b><br>
-      • Sell ${plan.tp2.shares} shares (${plan.tp2.pct}%) at ${m(plan.tp2.price)} (${plan.tp2.mult}x ATR)<br>
-      • Profit: +${m(plan.tp2.profit)}<br>
-      • <span class="action">ACTION: Trail Stop Loss on remaining ${plan.tp3.shares} shares to TP1 (${m(plan.tp1.price)})</span>
-    </div>
-    <div class="tp tp3">
-      <b>Target 3 (Trailing Runner):</b><br>
-      • Sell ${plan.tp3.shares} shares (${plan.tp3.pct}%) at ${m(plan.tp3.price)}+ (${plan.tp3.mult}x ATR target / Trailing ATR)<br>
-      • Projected Profit: +${m(plan.tp3.profit)}
-    </div>
-    <div class="total">
-      Total Projected Profit: +${m(plan.total_profit)} | Blended R:R = 1 : ${plan.blended_rr.toFixed(2)}
-    </div>
-    <div class="risk-free-note">
-      After TP1: ${plan.tp1.pct}% locked, ${remaining1} shares risk-free at BE. After TP2: ${plan.tp1.pct + plan.tp2.pct}% locked, ${plan.tp3.shares} shares risk-free at TP1.
-    </div>
+    <div class="total-bar">Total projected profit: +${m(plan.total_profit)} | Blended R:R = 1:${plan.blended_rr.toFixed(2)}</div>
+    <div class="risk-free-note">After TP1: ${remaining1} shares have a breakeven stop. After TP2: ${plan.tp3.shares} runner shares are stopped at TP1.</div>
+    <div class="scaling-message" id="scaling-message-${escapeHtml(ticker)}" aria-live="polite"></div>
   </div>`;
+}
+
+async function updateScaling(ticker, tp1Mult) {
+  const row = scanResults.find(result => result.ticker === ticker);
+  if (!row?.chart || !row.trade_setup || !row.scaling_plan) return;
+  const requestId = (scalingUpdates.get(ticker) || 0) + 1;
+  scalingUpdates.set(ticker, requestId);
+  const plan = row.scaling_plan;
+  const params = new URLSearchParams({
+    entry: row.chart.entry,
+    atr: row.chart.atr,
+    shares: plan.total_shares,
+    stop_mult: parseFloat(stopMult.value) || 1.5,
+    tp1: tp1Mult,
+    tp2: plan.tp2.mult,
+    tp3: plan.tp3.mult
+  });
+  try {
+    const response = await fetch(`/api/scaling?${params}`);
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+    if (scalingUpdates.get(ticker) !== requestId) return;
+    const risk = result.entry - result.stop;
+    const targets = [result.tp1, result.tp2, result.tp3];
+    const ratios = targets.map(target => risk > 0 ? (target.price - result.entry) / risk : 0);
+    row.scaling_plan = result;
+    row.chart.tp1 = result.tp1.price;
+    row.chart.tp2 = result.tp2.price;
+    row.chart.tp3 = result.tp3.price;
+    row.rr_t1 = row.trade_setup.rr_t1 = ratios[0];
+    row.rr_t2 = row.trade_setup.rr_t2 = ratios[1];
+    row.rr_t3 = row.trade_setup.rr_t3 = ratios[2];
+    row.trade_setup.target1 = result.tp1.price;
+    row.trade_setup.target2 = result.tp2.price;
+    row.trade_setup.target3 = result.tp3.price;
+    row.trade_setup.tp1_pct = (result.tp1.price / result.entry - 1) * 100;
+    row.trade_setup.tp2_pct = (result.tp2.price / result.entry - 1) * 100;
+    row.trade_setup.tp3_pct = (result.tp3.price / result.entry - 1) * 100;
+    const rrCheck = row.checks.find(check => check.name === "R/R");
+    if (rrCheck) {
+      const stopPct = (result.entry - result.stop) / result.entry * 100;
+      const detail = `ATR ${result.atr.toFixed(2)} Stop ${params.get("stop_mult")}x=${stopPct.toFixed(2)}% TP1 ${tp1Mult}x TP2 ${result.tp2.mult}x TP3 ${result.tp3.mult}x R/R ${ratios[1].toFixed(2)}R`;
+      rrCheck.value = rrCheck.reason = rrCheck.detail = detail;
+    }
+    if (row.levels) {
+      row.levels.t1 = result.tp1.price;
+      row.levels.t2 = result.tp2.price;
+      row.levels.t3 = result.tp3.price;
+    }
+    renderScanTable();
+  } catch (error) {
+    if (scalingUpdates.get(ticker) !== requestId) return;
+    console.error(`Could not update ${ticker} scaling plan:`, error);
+    const message = document.getElementById(`scaling-message-${ticker}`);
+    if (message) message.textContent = `Scaling update failed: ${error.message}`;
+  }
+}
+
+async function copyScalingPlan(ticker, button) {
+  const row = scanResults.find(result => result.ticker === ticker);
+  if (!row?.scaling_plan) return;
+  const plan = row.scaling_plan;
+  const text = [
+    `${ticker} swing scaling plan`,
+    `Entry: $${plan.entry.toFixed(2)} | Stop: $${plan.stop.toFixed(2)} | ATR: $${plan.atr.toFixed(2)}`,
+    `TP1: ${plan.tp1.shares} shares at $${plan.tp1.price.toFixed(2)} (${plan.tp1.mult}x ATR), profit $${plan.tp1.profit.toFixed(2)}`,
+    `TP2: ${plan.tp2.shares} shares at $${plan.tp2.price.toFixed(2)} (${plan.tp2.mult}x ATR), profit $${plan.tp2.profit.toFixed(2)}`,
+    `TP3: ${plan.tp3.shares} shares at $${plan.tp3.price.toFixed(2)} (${plan.tp3.mult}x ATR), profit $${plan.tp3.profit.toFixed(2)}`,
+    `Total projected profit: $${plan.total_profit.toFixed(2)} | Blended R:R 1:${plan.blended_rr.toFixed(2)}`
+  ].join("\n");
+  try {
+    await navigator.clipboard.writeText(text);
+    button.textContent = "Copied";
+    setTimeout(() => { if (button.isConnected) button.textContent = "Copy Scaling Plan"; }, 1500);
+  } catch (error) {
+    console.error(`Could not copy ${ticker} scaling plan:`, error);
+    button.textContent = "Copy failed";
+  }
 }
 
 function tradeCardHtml(r) {
@@ -161,7 +362,7 @@ function tradeCardHtml(r) {
   const perShare = t.entry - t.stop;
   const shares = account > 0 && perShare > 0 ? Math.floor((account * riskPct / 100) / perShare) : 0;
   const taken = loadTrades().some(x => x.ticker === r.ticker && x.date === todayKey());
-  const chart = `https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(r.ticker)}&interval=D&theme=dark&hidesidetoolbar=1&style=1`;
+  const chartId = `tv-chart-${escapeHtml(r.ticker)}`;
   const rr = v => (typeof v === "number" ? `${v.toFixed(2)}R` : "n/a");
   const gain = v => (typeof v === "number" ? `${((v / t.entry - 1) * 100).toFixed(1)}%` : "");
   const warn = (t.warnings || []).map(w => `<div class="trade-warn">⚠ ${escapeHtml(w)}</div>`).join("");
@@ -174,8 +375,9 @@ function tradeCardHtml(r) {
     ${r.scaling_plan ? renderScalingPlan(r.scaling_plan, r.ticker) : `<div class="trade-levels">
       <span>Entry <b>${money(t.entry)}</b></span>
       <span>Stop <b>${money(t.stop)}</b> (-${t.stop_pct.toFixed(2)}%)</span>
-      <span>Target 1 <b>${money(t.target1)}</b> (+${gain(t.target1)}, ${rr(t.rr_t1)})</span>
-      <span>Target 2 <b>${money(t.target2)}</b> (+${gain(t.target2)}, ${rr(t.rr_t2)})</span>
+      <span>TP1 <b>${money(t.target1)}</b> (+${gain(t.target1)}, ${rr(t.rr_t1)})</span>
+      <span>TP2 <b>${money(t.target2)}</b> (+${gain(t.target2)}, ${rr(t.rr_t2)})</span>
+      <span>TP3 <b>${money(t.target3)}</b> (+${gain(t.target3)}, ${rr(t.rr_t3)})</span>
     </div>`}
     <div>Setup: <b>${escapeHtml(t.setup_type)}</b> | Confidence: ${conf} | Timeframe: ${escapeHtml(t.timeframe || loading)}</div>
     <div>Rationale: ${escapeHtml(t.rationale || loading)}</div>
@@ -184,7 +386,14 @@ function tradeCardHtml(r) {
     <label class="trade-taken"><input type="checkbox" data-taken="${escapeHtml(r.ticker)}" ${taken ? "checked" : ""}> Taken (save to journal)</label>
     <div class="trade-checks">${checks}</div>
     ${warn}
-    <iframe class="trade-chart" src="${chart}" loading="lazy" title="${escapeHtml(r.ticker)} chart"></iframe>
+    <div class="chart-levels" aria-label="Chart price levels">
+      <span>Entry ${money(t.entry)}</span><span>Stop ${money(t.stop)}</span>
+      <span>TP1 ${money(t.target1)}</span><span>TP2 ${money(t.target2)}</span>
+      <span>TP3 ${money(t.target3)}</span>
+    </div>
+    <div class="trade-chart" id="${chartId}" data-ticker="${escapeHtml(r.ticker)}">
+      <div class="chart-status">Loading TradingView chart…</div>
+    </div>
   </div>`;
 }
 
@@ -203,8 +412,8 @@ function setTaken(ticker, on) {
     const shares = t.entry > t.stop ? Math.floor((account * riskPct / 100) / (t.entry - t.stop)) : 0;
     trades.push({
       date: todayKey(), ticker, score: row.score, setup_type: t.setup_type,
-      entry: t.entry, stop: t.stop, target1: t.target1, target2: t.target2,
-      rr_t1: t.rr_t1, shares, account, risk_pct: riskPct
+      entry: t.entry, stop: t.stop, target1: t.target1, target2: t.target2, target3: t.target3,
+      rr_t1: t.rr_t1, rr_t2: t.rr_t2, rr_t3: t.rr_t3, shares, account, risk_pct: riskPct
     });
   }
   localStorage.setItem(TRADES_KEY, JSON.stringify(trades));
@@ -220,11 +429,12 @@ function downloadFile(name, text, type) {
 
 function exportWatchlistCsv() {
   const q = scanResults.filter(r => r.status === "PASS" && r.trade_setup);
-  const rows = [["Ticker", "Score", "Setup", "Entry", "Stop", "Stop%", "Target1", "Target2", "R/R T1", "Warnings"]];
+  const rows = [["Ticker", "Score", "Setup", "Entry", "Stop", "Stop%", "TP1", "TP2", "R/R TP1", "R/R TP2", "TP3", "Warnings"]];
   q.forEach(r => {
     const t = r.trade_setup;
     rows.push([r.ticker, r.score, t.setup_type, t.entry.toFixed(2), t.stop.toFixed(2), t.stop_pct.toFixed(2),
-      t.target1.toFixed(2), t.target2.toFixed(2), t.rr_t1.toFixed(2), (t.warnings || []).join(" | ")]);
+      t.target1.toFixed(2), t.target2.toFixed(2), t.rr_t1.toFixed(2), t.rr_t2.toFixed(2),
+      t.target3.toFixed(2), (t.warnings || []).join(" | ")]);
   });
   const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
   downloadFile(`watchlist-${todayKey()}.csv`, csv, "text/csv");
@@ -267,12 +477,14 @@ function renderScanTable() {
   const table = document.getElementById("scan-table");
   const body = document.getElementById("scan-body");
   if (!table || !body) return;
+  destroyTradeWidgets();
   const rows = scanResults.filter(r =>
     !(showPassOnly && r.status !== "PASS") &&
     !(scanFilter === "qual" && r.status !== "PASS") &&
     !(scanFilter === "perfect" && r.score !== "8/8"));
   table.style.display = scanResults.length ? "" : "none";
   body.innerHTML = rows.map(scanRowHtml).join("");
+  initializeTradeCharts();
   const summary = document.getElementById("scan-summary");
   if (summary) summary.textContent = scanSummaryText();
 }
@@ -302,12 +514,20 @@ if (scanBodyEl) {
   scanBodyEl.addEventListener("change", e => {
     const box = e.target.closest("input[data-taken]");
     if (box) setTaken(box.dataset.taken, box.checked);
+    const scalingSelect = e.target.closest("select[data-scaling-mult]");
+    if (scalingSelect) updateScaling(scalingSelect.dataset.ticker, Number(scalingSelect.value));
   });
 }
 
 const scanBody = document.getElementById("scan-body");
 if (scanBody) {
   scanBody.addEventListener("click", e => {
+    const copyButton = e.target.closest("button[data-copy-scaling]");
+    if (copyButton) {
+      e.stopPropagation();
+      copyScalingPlan(copyButton.dataset.copyScaling, copyButton);
+      return;
+    }
     const tr = e.target.closest("tr.scan-clickable");
     if (!tr) return;
     const ticker = tr.dataset.ticker;

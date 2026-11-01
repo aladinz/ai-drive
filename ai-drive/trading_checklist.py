@@ -21,7 +21,6 @@ MAX_ATR_TARGET_MULT = 5.0
 DEFAULT_SETTINGS = {"stop_mode": "atr", "atr_stop_mult": 1.5, "atr_target_mult": 3.0}
 LARGE_CAP = 100_000_000_000
 SPREAD_FAIL_PCT = 2.0
-FALLBACK_T2_R = 2.5
 DEFAULT_ACCOUNT = 10_000
 
 
@@ -211,7 +210,7 @@ def _event(d):
 
 
 def normalize_settings(settings=None):
-    """ATR settings: atr_stop_mult 1-2, atr_target_mult 2-5. stop_mode is always 'atr'."""
+    """ATR settings: stop is 1-2x ATR; core TP2 is 2-5x ATR. stop_mode is always 'atr'."""
     s = settings if isinstance(settings, dict) else {}
     stop_mult = _num(s.get("atr_stop_mult"))
     target_mult = _num(s.get("atr_target_mult"))
@@ -226,23 +225,43 @@ def normalize_settings(settings=None):
     }
 
 
-def calculate_atr_levels(entry_price, atr, stop_mult=1.5, target_mult=3.0):
-    """Pure ATR levels: stop = entry - stop_mult*ATR, target1 = entry + target_mult*ATR.
-    Stop % is clamped to the 1-5% guard; when clamped, target is reset to 2R of the clamped risk."""
+def calculate_atr_levels(entry_price, atr, stop_mult=1.5, tp1_mult=2.0,
+                         tp2_mult=3.0, tp3_mult=4.5):
+    """Calculate three ATR targets and a 1-5% guarded ATR stop."""
     stop_price = entry_price - (atr * stop_mult)
-    target1_price = entry_price + (atr * target_mult)
     stop_pct = (entry_price - stop_price) / entry_price * 100
     stop_pct_clamped = max(MIN_STOP_PCT, min(MAX_STOP_PCT, stop_pct))
-    if stop_pct != stop_pct_clamped:
+    if abs(stop_pct - stop_pct_clamped) > 0.01:
         stop_price = entry_price * (1 - stop_pct_clamped / 100)
-        target1_price = entry_price + (entry_price - stop_price) * 2.0
-    rr = (target1_price - entry_price) / (entry_price - stop_price)
+    risk = entry_price - stop_price
+    tp1_price = entry_price + (atr * tp1_mult)
+    tp2_price = entry_price + (atr * tp2_mult)
+    tp3_price = entry_price + (atr * tp3_mult)
+    tp1_rr = (tp1_price - entry_price) / risk
+    tp2_rr = (tp2_price - entry_price) / risk
+    tp3_rr = (tp3_price - entry_price) / risk
+    tp1_pct = (tp1_price - entry_price) / entry_price * 100
+    tp2_pct = (tp2_price - entry_price) / entry_price * 100
+    tp3_pct = (tp3_price - entry_price) / entry_price * 100
     return {
+        "entry": entry_price,
+        "stop": stop_price,
         "stop_price": stop_price,
-        "target1_price": target1_price,
+        "tp1_price": tp1_price,
+        "tp2_price": tp2_price,
+        "tp3_price": tp3_price,
+        "tp1_rr": tp1_rr,
+        "tp2_rr": tp2_rr,
+        "tp3_rr": tp3_rr,
+        "tp1_pct": tp1_pct,
+        "tp2_pct": tp2_pct,
+        "tp3_pct": tp3_pct,
+        "target1_price": tp1_price,
+        "target2_price": tp2_price,
+        "target3_price": tp3_price,
         "stop_pct": stop_pct_clamped,
-        "target_pct": (target1_price - entry_price) / entry_price * 100,
-        "rr": rr,
+        "target_pct": tp2_pct,
+        "rr": tp2_rr,
         "unclamped_stop_pct": stop_pct,
     }
 
@@ -293,24 +312,23 @@ def calculate_scaling_plan(entry_price, atr, total_shares=170,
 
 
 def check_rr(entry, stop_price, target1, atr, user_settings=None, target2=None):
-    """Pure ATR system: stop and target are ATR multiples; stop must be within 1-5%, R/R >= 1.5."""
+    """Check the guarded ATR stop and core TP2 reward/risk."""
     cfg = normalize_settings(user_settings)
-    entry, atr, target2 = _num(entry), _num(atr), _num(target2)
+    entry, atr = _num(entry), _num(atr)
     if not entry or entry <= 0:
         return _missing("R/R", "entry")
     if not atr or atr <= 0:
         return _missing("R/R", "atr")
-    stop_mult, target_mult = cfg["atr_stop_mult"], cfg["atr_target_mult"]
-    lv = calculate_atr_levels(entry, atr, stop_mult, target_mult)
-    stop_pct, stop_price, target_pct, rr_t1 = lv["stop_pct"], lv["stop_price"], lv["target_pct"], lv["rr"]
-    risk = entry - stop_price
-    rr_t2 = (target2 - entry) / risk if target2 is not None else None
+    stop_mult, tp2_mult = cfg["atr_stop_mult"], cfg["atr_target_mult"]
+    lv = calculate_atr_levels(entry, atr, stop_mult, 2.0, tp2_mult, 4.5)
+    stop_pct, stop_price = lv["stop_pct"], lv["stop_price"]
     stop_ok = MIN_STOP_PCT <= stop_pct <= MAX_STOP_PCT
-    rr_ok = rr_t1 >= MIN_REWARD_RISK
+    rr_ok = lv["tp2_rr"] >= MIN_REWARD_RISK
     detail = (
-        f"ATR {atr:.2f} Stop {stop_mult:g}x={stop_pct:.2f}% Target {target_mult:g}x={target_pct:.2f}% R/R {rr_t1:.2f}R"
+        f"ATR {atr:.2f} Stop {stop_mult:g}x={stop_pct:.2f}% "
+        f"TP1 2x TP2 {tp2_mult:g}x TP3 4.5x R/R {lv['tp2_rr']:.2f}R"
     )
-    if lv["unclamped_stop_pct"] != stop_pct:
+    if abs(lv["unclamped_stop_pct"] - stop_pct) > 0.01:
         detail += f" (stop clamped from {lv['unclamped_stop_pct']:.2f}%)"
     if not rr_ok:
         detail += f" FAIL (<{MIN_REWARD_RISK:g}R)"
@@ -320,14 +338,23 @@ def check_rr(entry, stop_price, target1, atr, user_settings=None, target2=None):
         "detail": detail,
         "stop_pct": stop_pct,
         "stop_price": stop_price,
-        "target1_price": lv["target1_price"],
-        "target_pct": target_pct,
+        "target1_price": lv["tp1_price"],
+        "target2_price": lv["tp2_price"],
+        "target3_price": lv["tp3_price"],
+        "target_pct": lv["tp2_pct"],
         "atr": atr,
         "atr_stop_mult": stop_mult,
-        "atr_target_mult": target_mult,
+        "atr_target_mult": tp2_mult,
+        "tp1_mult": 2.0,
+        "tp2_mult": tp2_mult,
+        "tp3_mult": 4.5,
         "mode": "atr",
-        "rr_t1": rr_t1,
-        "rr_t2": rr_t2,
+        "rr_t1": lv["tp1_rr"],
+        "rr_t2": lv["tp2_rr"],
+        "rr_t3": lv["tp3_rr"],
+        "tp1_pct": lv["tp1_pct"],
+        "tp2_pct": lv["tp2_pct"],
+        "tp3_pct": lv["tp3_pct"],
         "stop_ok": stop_ok,
         "rr_ok": rr_ok,
     }
@@ -335,7 +362,8 @@ def check_rr(entry, stop_price, target1, atr, user_settings=None, target2=None):
 
 def _risk_reward(d):
     return check_rr(
-        d.get("price"), d.get("stop"), d.get("target1", d.get("resistance")),
+        _num(d.get("close")) or _num(d.get("price")),
+        d.get("stop"), d.get("target1", d.get("resistance")),
         d.get("atr"), d.get("_settings"), d.get("target2"),
     )
 
@@ -345,7 +373,7 @@ _CHECKS = (_trend, _volume, _volatility, _momentum, _liquidity, _structure, _eve
 
 def qualify_ticker(ticker, market_data, settings=None):
     """Run the 8-point checklist; PASS needs at least 6 passing checks.
-    settings: {stop_mode, atr_stop_mult, atr_target_mult} (see normalize_settings)."""
+    settings: {stop_mode, atr_stop_mult, atr_target_mult}, with atr_target_mult controlling TP2."""
     data = dict(market_data) if isinstance(market_data, dict) else {}
     data["_settings"] = normalize_settings(settings)
     checks = []
@@ -365,20 +393,15 @@ def qualify_ticker(ticker, market_data, settings=None):
         critical_fails.append("R/R: Stop " + f"{rr['stop_pct']:.2f}% outside {MIN_STOP_PCT:g}-{MAX_STOP_PCT:g}%")
     qualified = passed >= PASS_THRESHOLD and not critical_fails
     fail_reasons = [f"{c['name']}: {c['reason']}" for c in checks if not c["pass"]]
-    warnings = [f"R/R: T1 {rr['rr_t1']:.2f}R < {MIN_REWARD_RISK:g}R"] if qualified and rr.get("rr_ok") is False else []
+    warnings = [f"R/R: TP2 {rr['rr_t2']:.2f}R < {MIN_REWARD_RISK:g}R"] if qualified and rr.get("rr_ok") is False else []
 
     entry = _num(data.get("close", data.get("price"))) or _num(data.get("price"))
     stop_pct = rr.get("stop_pct")
-    rr_t1, rr_t2 = rr.get("rr_t1"), rr.get("rr_t2")
-    stop_price = target1 = target2 = None
-    if entry and stop_pct is not None:
-        stop_price = entry * (1 - stop_pct / 100)
-        if rr_t1 is not None:
-            target1 = entry * (1 + stop_pct / 100 * rr_t1)
-        if rr_t2 is None and target1 is not None:
-            rr_t2 = max(FALLBACK_T2_R, rr_t1 + 1.0)
-        if rr_t2 is not None:
-            target2 = entry * (1 + stop_pct / 100 * rr_t2)
+    rr_t1, rr_t2, rr_t3 = rr.get("rr_t1"), rr.get("rr_t2"), rr.get("rr_t3")
+    stop_price = rr.get("stop_price")
+    target1, target2, target3 = (
+        rr.get("target1_price"), rr.get("target2_price"), rr.get("target3_price")
+    )
     structure = by_name.get("STRUCTURE", {})
     near_high = bool(entry and _num(data.get("target1")) and entry >= 0.98 * _num(data.get("target1")))
     if near_high:
@@ -406,7 +429,13 @@ def qualify_ticker(ticker, market_data, settings=None):
         "stop_price": stop_price,
         "target1_price": target1,
         "target2_price": target2,
+        "target3_price": target3,
         "rr_t1": rr_t1,
         "rr_t2": rr_t2,
+        "rr_t3": rr_t3,
+        "tp1_pct": rr.get("tp1_pct"),
+        "tp2_pct": rr.get("tp2_pct"),
+        "tp3_pct": rr.get("tp3_pct"),
+        "atr": rr.get("atr"),
         "settings": data["_settings"],
     }

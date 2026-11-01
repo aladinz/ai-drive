@@ -1,6 +1,7 @@
 import argparse
 from importlib import import_module
 import json
+import math
 import os
 import re
 import sys
@@ -454,10 +455,12 @@ LLM_TIMEOUT_S = 25
 LLM_MAX_TOKENS = 300
 SETTINGS_PATH = os.path.join(BASE_DIR, "scan_settings.json")
 normalize_settings = None
+calculate_atr_levels = None
 calculate_scaling_plan = None
 try:
     _checklist = import_module("trading_checklist")
     normalize_settings = _checklist.normalize_settings
+    calculate_atr_levels = _checklist.calculate_atr_levels
     calculate_scaling_plan = _checklist.calculate_scaling_plan
 except Exception:
     pass
@@ -483,17 +486,17 @@ def save_settings(new):
 
 
 def trade_levels(data, qual=None):
-    """Entry/stop/targets: taken from the checklist result when available, otherwise
-    a 2% stop with T1 = 1.5R and T2 = 2.5R."""
-    if qual and qual.get("entry_price") and qual.get("stop_price") is not None:
-        return {"entry": qual["entry_price"], "stop": qual["stop_price"],
-                "t1": qual["target1_price"], "t2": qual["target2_price"]}
-    entry = data.get("price")
-    if not entry:
+    """Return checklist-computed ATR levels without synthesizing percentage targets."""
+    if not qual or not qual.get("entry_price") or qual.get("stop_price") is None:
         return None
-    stop = entry * 0.98
-    risk = entry - stop
-    return {"entry": entry, "stop": stop, "t1": entry + 1.5 * risk, "t2": entry + 2.5 * risk}
+    return {
+        "entry": qual["entry_price"],
+        "stop": qual["stop_price"],
+        "t1": qual["target1_price"],
+        "t2": qual["target2_price"],
+        "t3": qual["target3_price"],
+        "atr": qual["atr"],
+    }
 
 
 def quick_trade_reply(candidates, payload, headers, qual, data):
@@ -506,12 +509,13 @@ def quick_trade_reply(candidates, payload, headers, qual, data):
         card += (
             f"- 🎯 Entry: {_usd(levels['entry'])}\n"
             f"- 🛑 Stop: {_usd(levels['stop'])} ({(levels['entry'] - levels['stop']) / levels['entry'] * 100:.1f}% below)\n"
-            f"- 🏁 Target 1: {_usd(levels['t1'])} (1.5R)\n"
-            f"- 🚀 Target 2: {_usd(levels['t2'])} (2.5R)\n"
+            f"- 🏁 TP1: {_usd(levels['t1'])} ({qual['rr_t1']:.2f}R)\n"
+            f"- 🚀 TP2: {_usd(levels['t2'])} ({qual['rr_t2']:.2f}R)\n"
+            f"- 📈 TP3: {_usd(levels['t3'])} ({qual['rr_t3']:.2f}R)\n"
         )
         prompt += (
             f" Levels already computed: Entry {levels['entry']:.2f}, Stop {levels['stop']:.2f}, "
-            f"Target 1 {levels['t1']:.2f}, Target 2 {levels['t2']:.2f}. "
+            f"TP1 {levels['t1']:.2f}, TP2 {levels['t2']:.2f}, TP3 {levels['t3']:.2f}. "
             "Do not recalculate them. In 3 short bullets, give the trade thesis and the main risk."
         )
     messages = [{"role": "system", "content": prompt}] + list(payload.get("messages", []))[-1:]
@@ -566,7 +570,10 @@ def build_trade_setup(qual, data):
     return {
         "entry": qual["entry_price"], "stop": qual["stop_price"], "stop_pct": qual["stop_pct"],
         "target1": qual["target1_price"], "target2": qual["target2_price"],
-        "rr_t1": qual["rr_t1"], "rr_t2": qual["rr_t2"],
+        "target3": qual["target3_price"],
+        "rr_t1": qual["rr_t1"], "rr_t2": qual["rr_t2"], "rr_t3": qual["rr_t3"],
+        "atr": qual["atr"], "tp1_pct": qual["tp1_pct"], "tp2_pct": qual["tp2_pct"],
+        "tp3_pct": qual["tp3_pct"],
         "setup_type": qual["setup_type"], "position_size_1pct": qual["position_size_1pct"],
         "account": qual["account"], "confidence": None, "rationale": None,
         "invalidation": None, "timeframe": None, "warnings": qual.get("warnings", []),
@@ -613,9 +620,9 @@ def llm_setup_notes(candidates, headers, qual, data):
         f"Ticker {qual['ticker']} QUALIFIED {qual['score']}. Price {setup['entry']:.2f}, "
         f"SMA50 {data.get('sma50') or 0:.2f}, SMA200 {data.get('sma200') or 0:.2f}, "
         f"RSI {data.get('rsi') or 0:.0f}, ATR {atr_pct:.1f}%, Volume {int(data.get('volume') or 0):,}. "
-        f"Stop {setup['stop_pct']:.2f}% T1 {setup['rr_t1']:.2f}R. Checklist: {checks}. "
+        f"Stop {setup['stop_pct']:.2f}% TP1 {setup['rr_t1']:.2f}R, core TP2 {setup['rr_t2']:.2f}R. Checklist: {checks}. "
         f"Levels are fixed: Entry {setup['entry']:.2f} Stop {setup['stop']:.2f} "
-        f"T1 {setup['target1']:.2f} T2 {setup['target2']:.2f}. "
+        f"TP1 {setup['target1']:.2f} TP2 {setup['target2']:.2f} TP3 {setup['target3']:.2f}. "
         "Give JSON: setup_type, confidence 0-100, rationale (1 short sentence), "
         "invalidation (what breaks the setup, short), timeframe (3-10 days)."
     )
@@ -658,9 +665,9 @@ def qualify_and_generate(ticker, candidates=None, headers=None, commentary=False
     so a batch scan stays fast; trade_setup numbers are always computed in code."""
     t0 = time.perf_counter()
     row = {"ticker": ticker, "status": "ERROR", "score": "0/8", "passed": 0, "qualified": False,
-           "stop_pct": None, "rr_t1": None, "rr_t2": None, "reason": "", "checks": [],
+           "stop_pct": None, "rr_t1": None, "rr_t2": None, "rr_t3": None, "reason": "", "checks": [],
            "fail_reasons": [], "levels": None, "content": None, "trade_setup": None,
-           "scaling_plan": None, "position": None}
+           "scaling_plan": None, "position": None, "chart": None}
     try:
         if qualify_ticker is None or "yahoo_finance" not in TOOLS:
             raise RuntimeError("qualification unavailable")
@@ -674,14 +681,16 @@ def qualify_and_generate(ticker, candidates=None, headers=None, commentary=False
             sm, tm = cfg.get("atr_stop_mult"), cfg.get("atr_target_mult")
             print(f"[ATR] {ticker} Entry ${qual['entry_price']:.2f} ATR ${rr_chk['atr']:.2f} "
                   f"Stop {sm:g}x ${qual['stop_price']:.2f} {qual['stop_pct']:.2f}% "
-                  f"Target {tm:g}x ${qual['target1_price']:.2f} {rr_chk['target_pct']:.2f}% "
-                  f"R/R {qual['rr_t1']:.1f}R", flush=True)
+                  f"TP1 {rr_chk['tp1_mult']:g}x ${qual['target1_price']:.2f} "
+                  f"TP2 {tm:g}x ${qual['target2_price']:.2f} "
+                  f"TP3 {rr_chk['tp3_mult']:g}x ${qual['target3_price']:.2f} "
+                  f"R/R {qual['rr_t2']:.1f}R", flush=True)
         else:
             print(f"[ATR] {ticker} no ATR data", flush=True)
         row.update(
             status=qual["status"], score=qual["score"], qualified=qual["qualified"],
             passed=sum(1 for c in qual["checks"] if c["pass"]),
-            stop_pct=qual["stop_pct"], rr_t1=qual["rr_t1"], rr_t2=qual["rr_t2"],
+            stop_pct=qual["stop_pct"], rr_t1=qual["rr_t1"], rr_t2=qual["rr_t2"], rr_t3=qual["rr_t3"],
             checks=qual["checks"], fail_reasons=qual["fail_reasons"],
             reason="; ".join(_short_reason(c) for c in qual["checks"] if not c["pass"]),
         )
@@ -691,11 +700,23 @@ def qualify_and_generate(ticker, candidates=None, headers=None, commentary=False
             if calculate_scaling_plan and rr_chk.get("atr") and qual.get("entry_price"):
                 plan = calculate_scaling_plan(
                     qual["entry_price"], rr_chk["atr"], total_shares=shares,
-                    stop_mult=cfg.get("atr_stop_mult", 1.5), stop_price=qual["stop_price"])
+                    stop_mult=cfg.get("atr_stop_mult", 1.5),
+                    tp1_mult=2.0, tp2_mult=cfg.get("atr_target_mult", 3.0),
+                    tp3_mult=4.5, stop_price=qual["stop_price"])
                 row["scaling_plan"] = plan
                 row["entry_price"], row["stop_price"] = qual["entry_price"], plan["stop"]
                 row["position"] = {"shares": plan["total_shares"], "entry": qual["entry_price"],
                                    "stop": plan["stop"], "atr": rr_chk["atr"]}
+            if row["levels"] and rr_chk.get("atr"):
+                row["chart"] = {
+                    "ticker": ticker,
+                    "entry": qual["entry_price"],
+                    "stop": qual["stop_price"],
+                    "tp1": qual["target1_price"],
+                    "tp2": qual["target2_price"],
+                    "tp3": qual["target3_price"],
+                    "atr": rr_chk["atr"],
+                }
             row["trade_setup"] = (
                 llm_setup_notes(candidates, headers, qual, market_data) if commentary
                 else build_trade_setup(qual, market_data)
@@ -991,10 +1012,17 @@ class WebUIProxyHandler(SimpleHTTPRequestHandler):
         except (KeyError, ValueError):
             self._send_json(400, {"error": "Required numeric params: entry, atr; optional: shares, stop_mult, tp1, tp2, tp3"})
             return
-        if entry <= 0 or atr <= 0 or shares < 1 or stop_mult <= 0 or min(tps) <= 0 or calculate_scaling_plan is None:
+        if (not all(math.isfinite(value) for value in (entry, atr, stop_mult, *tps))
+                or entry <= 0 or atr <= 0 or shares < 1 or stop_mult <= 0
+                or not tps[0] < tps[1] < tps[2]
+                or calculate_atr_levels is None or calculate_scaling_plan is None):
             self._send_json(400, {"error": "Invalid scaling parameters"})
             return
-        self._send_json(200, calculate_scaling_plan(entry, atr, shares, stop_mult, *tps))
+        levels = calculate_atr_levels(entry, atr, stop_mult, *tps)
+        plan = calculate_scaling_plan(
+            entry, atr, shares, stop_mult, *tps, stop_price=levels["stop_price"]
+        )
+        self._send_json(200, plan)
 
     def do_POST(self):
         if self.path.startswith("/voicebox/v1/"):
