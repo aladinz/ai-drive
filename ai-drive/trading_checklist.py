@@ -14,9 +14,11 @@ CRITICAL_EVENT_TYPES = ("earnings", "split", "fda")
 MIN_REWARD_RISK = 1.5
 MIN_STOP_PCT = 1.0
 MAX_STOP_PCT = 5.0
-MIN_ATR_MULT = 1.0
-MAX_ATR_MULT = 1.5
-DEFAULT_SETTINGS = {"stop_mode": "fixed", "stop_fixed_pct": 2.0, "atr_mult": 1.2}
+MIN_ATR_STOP_MULT = 1.0
+MAX_ATR_STOP_MULT = 2.0
+MIN_ATR_TARGET_MULT = 2.0
+MAX_ATR_TARGET_MULT = 5.0
+DEFAULT_SETTINGS = {"stop_mode": "atr", "atr_stop_mult": 1.5, "atr_target_mult": 3.0}
 LARGE_CAP = 100_000_000_000
 SPREAD_FAIL_PCT = 2.0
 FALLBACK_T2_R = 2.5
@@ -209,71 +211,121 @@ def _event(d):
 
 
 def normalize_settings(settings=None):
-    """User stop settings: stop_mode 'atr'|'fixed', stop_fixed_pct 1-5, atr_mult 1.5-2.5."""
+    """ATR settings: atr_stop_mult 1-2, atr_target_mult 2-5. stop_mode is always 'atr'."""
     s = settings if isinstance(settings, dict) else {}
-    mode = str(s.get("stop_mode", DEFAULT_SETTINGS["stop_mode"])).lower()
-    fixed = _num(s.get("stop_fixed_pct"))
-    mult = _num(s.get("atr_mult"))
+    stop_mult = _num(s.get("atr_stop_mult"))
+    target_mult = _num(s.get("atr_target_mult"))
+    if stop_mult is None:
+        stop_mult = DEFAULT_SETTINGS["atr_stop_mult"]
+    if target_mult is None:
+        target_mult = DEFAULT_SETTINGS["atr_target_mult"]
     return {
-        "stop_mode": mode if mode in ("atr", "fixed") else "atr",
-        "stop_fixed_pct": min(MAX_STOP_PCT, max(MIN_STOP_PCT, fixed if fixed is not None else DEFAULT_SETTINGS["stop_fixed_pct"])),
-        "atr_mult": min(MAX_ATR_MULT, max(MIN_ATR_MULT, mult if mult is not None else DEFAULT_SETTINGS["atr_mult"])),
+        "stop_mode": "atr",
+        "atr_stop_mult": min(MAX_ATR_STOP_MULT, max(MIN_ATR_STOP_MULT, stop_mult)),
+        "atr_target_mult": min(MAX_ATR_TARGET_MULT, max(MIN_ATR_TARGET_MULT, target_mult)),
     }
 
 
-def calculate_stop(entry, atr, mode="fixed", fixed_pct=2.0, atr_mult=1.2):
-    """Return (stop_pct, stop_price, raw_pct). Fixed mode: fixed_pct; ATR mode: ATR% x multiplier
-    (falls back to fixed_pct without ATR). Clamped to the 1-5% guardrail; raw_pct is unclamped."""
-    if mode == "fixed" or not atr or not entry:
-        raw_pct = fixed_pct
-    else:
-        raw_pct = (atr / entry) * 100 * atr_mult
-    stop_pct = max(MIN_STOP_PCT, min(MAX_STOP_PCT, raw_pct))
-    return stop_pct, entry * (1 - stop_pct / 100), raw_pct
+def calculate_atr_levels(entry_price, atr, stop_mult=1.5, target_mult=3.0):
+    """Pure ATR levels: stop = entry - stop_mult*ATR, target1 = entry + target_mult*ATR.
+    Stop % is clamped to the 1-5% guard; when clamped, target is reset to 2R of the clamped risk."""
+    stop_price = entry_price - (atr * stop_mult)
+    target1_price = entry_price + (atr * target_mult)
+    stop_pct = (entry_price - stop_price) / entry_price * 100
+    stop_pct_clamped = max(MIN_STOP_PCT, min(MAX_STOP_PCT, stop_pct))
+    if stop_pct != stop_pct_clamped:
+        stop_price = entry_price * (1 - stop_pct_clamped / 100)
+        target1_price = entry_price + (entry_price - stop_price) * 2.0
+    rr = (target1_price - entry_price) / (entry_price - stop_price)
+    return {
+        "stop_price": stop_price,
+        "target1_price": target1_price,
+        "stop_pct": stop_pct_clamped,
+        "target_pct": (target1_price - entry_price) / entry_price * 100,
+        "rr": rr,
+        "unclamped_stop_pct": stop_pct,
+    }
+
+
+def calculate_scaling_plan(entry_price, atr, total_shares=170,
+                           stop_mult=1.5, tp1_mult=2.0, tp2_mult=3.0, tp3_mult=4.5,
+                           t1_pct=0.5, t2_pct=0.3, t3_pct=0.2, stop_price=None):
+    """3-tranche scaling plan (50/30/20 by default) with breakeven / trail actions.
+    stop_price overrides the ATR stop (e.g. when the 1-5% guard clamped it)."""
+    total_shares = int(total_shares)
+    if stop_price is None:
+        stop_price = entry_price - (atr * stop_mult)
+    risk_per_share = entry_price - stop_price
+
+    tp1_price = entry_price + (atr * tp1_mult)
+    tp2_price = entry_price + (atr * tp2_mult)
+    tp3_price = entry_price + (atr * tp3_mult)
+
+    t1_shares = int(total_shares * t1_pct)
+    t2_shares = int(total_shares * t2_pct)
+    t3_shares = total_shares - t1_shares - t2_shares
+
+    t1_profit = (tp1_price - entry_price) * t1_shares
+    t2_profit = (tp2_price - entry_price) * t2_shares
+    t3_profit = (tp3_price - entry_price) * t3_shares
+    total_profit = t1_profit + t2_profit + t3_profit
+
+    initial_risk_dollars = risk_per_share * total_shares
+    blended_rr = total_profit / initial_risk_dollars if initial_risk_dollars else 0
+
+    return {
+        "entry": entry_price,
+        "stop": stop_price,
+        "atr": atr,
+        "total_shares": total_shares,
+        "initial_risk_per_share": risk_per_share,
+        "initial_risk_dollars": initial_risk_dollars,
+        "tp1": {"price": tp1_price, "mult": tp1_mult, "shares": t1_shares, "pct": t1_pct * 100, "profit": t1_profit,
+                "action": f"Move Stop to BREAKEVEN (${entry_price:.2f})"},
+        "tp2": {"price": tp2_price, "mult": tp2_mult, "shares": t2_shares, "pct": t2_pct * 100, "profit": t2_profit,
+                "action": f"Trail Stop to TP1 (${tp1_price:.2f})"},
+        "tp3": {"price": tp3_price, "mult": tp3_mult, "shares": t3_shares, "pct": t3_pct * 100, "profit": t3_profit,
+                "action": f"Trailing ATR Stop / TP1 (${tp1_price:.2f})"},
+        "total_profit": total_profit,
+        "blended_rr": blended_rr,
+        "blended_rr_display": f"1:{blended_rr:.2f}",
+    }
 
 
 def check_rr(entry, stop_price, target1, atr, user_settings=None, target2=None):
-    """Stop (ATR-multiple or fixed %, guarded to 1-5%) and Target 1 at least 1.5R.
-    The calculated stop is used for validation whenever ATR (or fixed mode) allows it;
-    a provided stop_price is only a fallback when ATR is unavailable in ATR mode."""
+    """Pure ATR system: stop and target are ATR multiples; stop must be within 1-5%, R/R >= 1.5."""
     cfg = normalize_settings(user_settings)
-    entry, stop_price, target1, atr, target2 = _num(entry), _num(stop_price), _num(target1), _num(atr), _num(target2)
+    entry, atr, target2 = _num(entry), _num(atr), _num(target2)
     if not entry or entry <= 0:
         return _missing("R/R", "entry")
-    mode, mult = cfg["stop_mode"], cfg["atr_mult"]
-    if mode == "fixed" or (atr and atr > 0):
-        stop_pct, stop_price, raw_pct = calculate_stop(entry, atr or 0, mode, cfg["stop_fixed_pct"], mult)
-        if mode == "fixed":
-            basis = f"fixed {cfg['stop_fixed_pct']:.1f}%"
-        else:
-            basis = f"ATR ${atr:.2f} x {mult:g} = {raw_pct:.2f}%"
-        if abs(raw_pct - stop_pct) > 1e-9:
-            basis += f" clamped to {stop_pct:.2f}%"
-    elif stop_price and 0 < stop_price < entry:
-        stop_pct = (entry - stop_price) / entry * 100
-        basis = "provided stop, no ATR"
-    else:
-        return _missing("R/R", "atr", "stop")
-    if target1 is None:
-        return _missing("R/R", "target1")
+    if not atr or atr <= 0:
+        return _missing("R/R", "atr")
+    stop_mult, target_mult = cfg["atr_stop_mult"], cfg["atr_target_mult"]
+    lv = calculate_atr_levels(entry, atr, stop_mult, target_mult)
+    stop_pct, stop_price, target_pct, rr_t1 = lv["stop_pct"], lv["stop_price"], lv["target_pct"], lv["rr"]
     risk = entry - stop_price
-    rr_t1 = (target1 - entry) / risk
     rr_t2 = (target2 - entry) / risk if target2 is not None else None
     stop_ok = MIN_STOP_PCT <= stop_pct <= MAX_STOP_PCT
     rr_ok = rr_t1 >= MIN_REWARD_RISK
-    t2_text = f", T2 {rr_t2:.2f}R" if rr_t2 is not None else ""
     detail = (
-        f"Stop {stop_pct:.2f}% ({basis}, {'in' if stop_ok else 'outside'} 1-5% guard) {'PASS' if stop_ok else 'FAIL'}, "
-        f"T1 {rr_t1:.2f}R >={MIN_REWARD_RISK:g}R {'PASS' if rr_ok else 'FAIL'}{t2_text}"
+        f"ATR {atr:.2f} Stop {stop_mult:g}x={stop_pct:.2f}% Target {target_mult:g}x={target_pct:.2f}% R/R {rr_t1:.2f}R"
     )
+    if lv["unclamped_stop_pct"] != stop_pct:
+        detail += f" (stop clamped from {lv['unclamped_stop_pct']:.2f}%)"
+    if not rr_ok:
+        detail += f" FAIL (<{MIN_REWARD_RISK:g}R)"
     passed = stop_ok and rr_ok
     return {
         **_check("R/R", passed, detail, detail),
         "detail": detail,
         "stop_pct": stop_pct,
         "stop_price": stop_price,
-        "atr_mult": mult if mode == "atr" else None,
-        "mode": mode,
+        "target1_price": lv["target1_price"],
+        "target_pct": target_pct,
+        "atr": atr,
+        "atr_stop_mult": stop_mult,
+        "atr_target_mult": target_mult,
+        "mode": "atr",
         "rr_t1": rr_t1,
         "rr_t2": rr_t2,
         "stop_ok": stop_ok,
@@ -293,7 +345,7 @@ _CHECKS = (_trend, _volume, _volatility, _momentum, _liquidity, _structure, _eve
 
 def qualify_ticker(ticker, market_data, settings=None):
     """Run the 8-point checklist; PASS needs at least 6 passing checks.
-    settings: {stop_mode, stop_fixed_pct, atr_mult} (see normalize_settings)."""
+    settings: {stop_mode, atr_stop_mult, atr_target_mult} (see normalize_settings)."""
     data = dict(market_data) if isinstance(market_data, dict) else {}
     data["_settings"] = normalize_settings(settings)
     checks = []

@@ -94,43 +94,43 @@ IF %ERRORLEVEL%==1 (
   SET MODEL_FILE=qwen2.5-coder-7b-instruct-q4_k_m.gguf
   SET MODEL_LABEL=Qwen 2.5 Coder 7B
   SET CTX_SIZE=8192
-  SET WAIT=120
+  SET WAIT=300
 )
 IF %ERRORLEVEL%==2 (
   SET MODEL_FILE=Llama-3.1-8B-Lexi-Uncensored-V2-Q6_K.gguf
   SET MODEL_LABEL=Llama 3.1 8B Lexi
   SET CTX_SIZE=8192
-  SET WAIT=150
+  SET WAIT=300
 )
 IF %ERRORLEVEL%==3 (
   SET MODEL_FILE=DarkIdol-Llama-3.1-8B-Instruct-1.2-Uncensored.Q4_K_M.gguf
   SET MODEL_LABEL=DarkIdol Llama 3.1 8B
   SET CTX_SIZE=8192
-  SET WAIT=150
+  SET WAIT=300
 )
 IF %ERRORLEVEL%==4 (
   SET MODEL_FILE=L3.1-RP-Hero-BigTalker-8B-D_AU-Q4_k_m.gguf
   SET MODEL_LABEL=L3.1-RP-Hero-BigTalker 8B
   SET CTX_SIZE=8192
-  SET WAIT=150
+  SET WAIT=300
 )
 IF %ERRORLEVEL%==5 (
   SET MODEL_FILE=L3.1-RP-Hero-Dirty_Harry-8B-D_AU-Q4_k_m.gguf
   SET MODEL_LABEL=L3.1-RP-Hero-Dirty_Harry 8B
   SET CTX_SIZE=8192
-  SET WAIT=150
+  SET WAIT=300
 )
 IF %ERRORLEVEL%==6 (
   SET MODEL_FILE=Llama-3.1-128k-Dark-Planet-Uncensored-8B-Q4_k_m.gguf
   SET MODEL_LABEL=Dark Planet 8B
   SET CTX_SIZE=8192
-  SET WAIT=150
+  SET WAIT=300
 )
 IF %ERRORLEVEL%==7 (
   SET MODEL_FILE=Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf
   SET MODEL_LABEL=Meta Llama 3.1 8B Instruct
   SET CTX_SIZE=8192
-  SET WAIT=150
+  SET WAIT=300
 )
 
 if defined WEB_DIR (
@@ -147,7 +147,7 @@ echo ============================================
 echo.
 
 echo Selecting available engine port...
-for /f %%P in ('powershell -NoProfile -Command "$ports=@(8080,8081,8082,8083); foreach($port in $ports){ $c=Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if(-not $c){ Write-Output $port; exit 0 }; $p=Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue; if($p -and $p.ProcessName -ieq 'llamafile'){ Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue; Write-Output $port; exit 0 } }; exit 1"') do set "ENGINE_PORT=%%P"
+for /f %%P in ('powershell -NoProfile -Command "$ports=@(8080,8081,8082,8083); foreach($port in $ports){ $c=Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if($c){ $p=Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue; if($p -and $p.ProcessName -ieq 'llamafile'){ Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1 } }; try { $l=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,$port); $l.Start(); $l.Stop(); Write-Output $port; exit 0 } catch {} }; exit 1"') do set "ENGINE_PORT=%%P"
 if not defined ENGINE_PORT (
   echo ERROR: No free engine port found in 8080-8083.
   echo Close any app using those ports and rerun this launcher.

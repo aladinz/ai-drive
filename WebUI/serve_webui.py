@@ -454,14 +454,18 @@ LLM_TIMEOUT_S = 25
 LLM_MAX_TOKENS = 300
 SETTINGS_PATH = os.path.join(BASE_DIR, "scan_settings.json")
 normalize_settings = None
+calculate_scaling_plan = None
 try:
-    normalize_settings = import_module("trading_checklist").normalize_settings
+    _checklist = import_module("trading_checklist")
+    normalize_settings = _checklist.normalize_settings
+    calculate_scaling_plan = _checklist.calculate_scaling_plan
 except Exception:
     pass
+DEFAULT_SHARES = 170
 
 
 def load_settings():
-    """User stop settings (stop_mode, stop_fixed_pct, atr_mult); defaults if none saved."""
+    """User stop settings (stop_mode, atr_stop_mult, atr_target_mult); defaults if none saved."""
     saved = {}
     try:
         with open(SETTINGS_PATH, encoding="utf-8") as fh:
@@ -649,13 +653,14 @@ def llm_setup_notes(candidates, headers, qual, data):
     return setup
 
 
-def qualify_and_generate(ticker, candidates=None, headers=None, commentary=False):
+def qualify_and_generate(ticker, candidates=None, headers=None, commentary=False, shares=DEFAULT_SHARES):
     """Qualify one ticker and return a flat, JSON-safe row. Llama is opt-in (commentary=True)
     so a batch scan stays fast; trade_setup numbers are always computed in code."""
     t0 = time.perf_counter()
     row = {"ticker": ticker, "status": "ERROR", "score": "0/8", "passed": 0, "qualified": False,
            "stop_pct": None, "rr_t1": None, "rr_t2": None, "reason": "", "checks": [],
-           "fail_reasons": [], "levels": None, "content": None, "trade_setup": None}
+           "fail_reasons": [], "levels": None, "content": None, "trade_setup": None,
+           "scaling_plan": None, "position": None}
     try:
         if qualify_ticker is None or "yahoo_finance" not in TOOLS:
             raise RuntimeError("qualification unavailable")
@@ -664,8 +669,15 @@ def qualify_and_generate(ticker, candidates=None, headers=None, commentary=False
             raise RuntimeError("no market data")
         qual = qualify_ticker(ticker, market_data, load_settings())
         cfg = qual.get("settings") or {}
-        print(f"[STOP] {ticker} mode={cfg.get('stop_mode')} fixed={cfg.get('stop_fixed_pct')}% "
-              f"atr_mult={cfg.get('atr_mult')} => stop {qual['stop_pct']}%", flush=True)
+        rr_chk = next((c for c in qual["checks"] if c["name"] == "R/R"), {})
+        if rr_chk.get("atr"):
+            sm, tm = cfg.get("atr_stop_mult"), cfg.get("atr_target_mult")
+            print(f"[ATR] {ticker} Entry ${qual['entry_price']:.2f} ATR ${rr_chk['atr']:.2f} "
+                  f"Stop {sm:g}x ${qual['stop_price']:.2f} {qual['stop_pct']:.2f}% "
+                  f"Target {tm:g}x ${qual['target1_price']:.2f} {rr_chk['target_pct']:.2f}% "
+                  f"R/R {qual['rr_t1']:.1f}R", flush=True)
+        else:
+            print(f"[ATR] {ticker} no ATR data", flush=True)
         row.update(
             status=qual["status"], score=qual["score"], qualified=qual["qualified"],
             passed=sum(1 for c in qual["checks"] if c["pass"]),
@@ -675,6 +687,15 @@ def qualify_and_generate(ticker, candidates=None, headers=None, commentary=False
         )
         if qual["qualified"]:
             row["levels"] = trade_levels(market_data, qual)
+            rr_chk = next((c for c in qual["checks"] if c["name"] == "R/R"), {})
+            if calculate_scaling_plan and rr_chk.get("atr") and qual.get("entry_price"):
+                plan = calculate_scaling_plan(
+                    qual["entry_price"], rr_chk["atr"], total_shares=shares,
+                    stop_mult=cfg.get("atr_stop_mult", 1.5), stop_price=qual["stop_price"])
+                row["scaling_plan"] = plan
+                row["entry_price"], row["stop_price"] = qual["entry_price"], plan["stop"]
+                row["position"] = {"shares": plan["total_shares"], "entry": qual["entry_price"],
+                                   "stop": plan["stop"], "atr": rr_chk["atr"]}
             row["trade_setup"] = (
                 llm_setup_notes(candidates, headers, qual, market_data) if commentary
                 else build_trade_setup(qual, market_data)
@@ -688,9 +709,9 @@ def qualify_and_generate(ticker, candidates=None, headers=None, commentary=False
     return row
 
 
-def scan_batch(tickers, candidates=None, headers=None, commentary=False):
+def scan_batch(tickers, candidates=None, headers=None, commentary=False, shares=DEFAULT_SHARES):
     """Qualify every ticker; QUALIFIED first, then by number of passed checks."""
-    results = [qualify_and_generate(t, candidates, headers, commentary) for t in tickers]
+    results = [qualify_and_generate(t, candidates, headers, commentary, shares) for t in tickers]
     results.sort(key=lambda r: (r["qualified"], r["passed"]), reverse=True)
     return results
 
@@ -951,10 +972,29 @@ class WebUIProxyHandler(SimpleHTTPRequestHandler):
         if self.path.split("?")[0] == "/api/settings":
             self._send_json(200, load_settings())
             return
+        if self.path.split("?")[0] == "/api/scaling":
+            self._handle_scaling()
+            return
         if self.path.startswith("/v1/"):
             self._proxy_request("GET")
             return
         super().do_GET()
+
+    def _handle_scaling(self):
+        from urllib.parse import parse_qs, urlparse
+        q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+        try:
+            entry, atr = float(q["entry"]), float(q["atr"])
+            shares = int(float(q.get("shares", DEFAULT_SHARES)))
+            stop_mult = float(q.get("stop_mult", 1.5))
+            tps = [float(q.get(k, d)) for k, d in (("tp1", 2.0), ("tp2", 3.0), ("tp3", 4.5))]
+        except (KeyError, ValueError):
+            self._send_json(400, {"error": "Required numeric params: entry, atr; optional: shares, stop_mult, tp1, tp2, tp3"})
+            return
+        if entry <= 0 or atr <= 0 or shares < 1 or stop_mult <= 0 or min(tps) <= 0 or calculate_scaling_plan is None:
+            self._send_json(400, {"error": "Invalid scaling parameters"})
+            return
+        self._send_json(200, calculate_scaling_plan(entry, atr, shares, stop_mult, *tps))
 
     def do_POST(self):
         if self.path.startswith("/voicebox/v1/"):
@@ -1006,18 +1046,22 @@ class WebUIProxyHandler(SimpleHTTPRequestHandler):
             return
         commentary = bool(data.get("commentary")) or self.path.split("?")[0] == "/api/setup"
         candidates, headers = self._candidates(), self._forward_headers()
+        try:
+            shares = max(1, int(float(data.get("shares", DEFAULT_SHARES))))
+        except (TypeError, ValueError):
+            shares = DEFAULT_SHARES
         if self.path.split("?")[0] in ("/api/check", "/api/setup"):
             tickers = parse_input(data.get("ticker", ""))
             if len(tickers) != 1:
                 self._send_json(400, {"error": "Provide exactly one valid ticker"})
                 return
-            self._send_json(200, qualify_and_generate(tickers[0], candidates, headers, commentary))
+            self._send_json(200, qualify_and_generate(tickers[0], candidates, headers, commentary, shares))
             return
         tickers = parse_input(data.get("tickers", ""))
         if not tickers:
             self._send_json(400, {"error": "No valid tickers"})
             return
-        self._send_json(200, scan_batch(tickers, candidates, headers, commentary))
+        self._send_json(200, scan_batch(tickers, candidates, headers, commentary, shares))
 
     def _proxy_request(self, method):
         content_length = int(self.headers.get("Content-Length", "0") or "0")

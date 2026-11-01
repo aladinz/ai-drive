@@ -118,6 +118,42 @@ function money(v) {
   return typeof v === "number" ? `$${v.toFixed(2)}` : "n/a";
 }
 
+function renderScalingPlan(plan, ticker) {
+  if (!plan) return "";
+  const m = v => `$${v.toFixed(2)}`;
+  const remaining1 = plan.total_shares - plan.tp1.shares;
+  return `
+  <div class="scaling-plan">
+    <div class="scaling-header">
+      Swing Scaling Plan: ${escapeHtml(ticker)} (LONG)<br>
+      Total Shares: ${plan.total_shares} @ ${m(plan.entry)} | Initial SL: ${m(plan.stop)} | ATR ${m(plan.atr)}
+    </div>
+    <div class="tp tp1">
+      <b>Target 1 (Lock &amp; Protect):</b><br>
+      • Sell ${plan.tp1.shares} shares (${plan.tp1.pct}%) at ${m(plan.tp1.price)} (${plan.tp1.mult}x ATR)<br>
+      • Profit: +${m(plan.tp1.profit)}<br>
+      • <span class="action">ACTION: Move Stop Loss on remaining ${remaining1} shares to BREAKEVEN (${m(plan.entry)})</span>
+    </div>
+    <div class="tp tp2">
+      <b>Target 2 (Core Swing):</b><br>
+      • Sell ${plan.tp2.shares} shares (${plan.tp2.pct}%) at ${m(plan.tp2.price)} (${plan.tp2.mult}x ATR)<br>
+      • Profit: +${m(plan.tp2.profit)}<br>
+      • <span class="action">ACTION: Trail Stop Loss on remaining ${plan.tp3.shares} shares to TP1 (${m(plan.tp1.price)})</span>
+    </div>
+    <div class="tp tp3">
+      <b>Target 3 (Trailing Runner):</b><br>
+      • Sell ${plan.tp3.shares} shares (${plan.tp3.pct}%) at ${m(plan.tp3.price)}+ (${plan.tp3.mult}x ATR target / Trailing ATR)<br>
+      • Projected Profit: +${m(plan.tp3.profit)}
+    </div>
+    <div class="total">
+      Total Projected Profit: +${m(plan.total_profit)} | Blended R:R = 1 : ${plan.blended_rr.toFixed(2)}
+    </div>
+    <div class="risk-free-note">
+      After TP1: ${plan.tp1.pct}% locked, ${remaining1} shares risk-free at BE. After TP2: ${plan.tp1.pct + plan.tp2.pct}% locked, ${plan.tp3.shares} shares risk-free at TP1.
+    </div>
+  </div>`;
+}
+
 function tradeCardHtml(r) {
   const t = r.trade_setup;
   const account = parseFloat(document.getElementById("scan-account")?.value) || 0;
@@ -135,12 +171,12 @@ function tradeCardHtml(r) {
     `<span class="trade-check ${c.pass ? "ok" : "bad"}" title="${escapeHtml(c.reason)}">${c.pass ? "✓" : "✗"} ${escapeHtml(c.name)}</span>`
   ).join("");
   return `<div class="trade-card">
-    <div class="trade-levels">
+    ${r.scaling_plan ? renderScalingPlan(r.scaling_plan, r.ticker) : `<div class="trade-levels">
       <span>Entry <b>${money(t.entry)}</b></span>
       <span>Stop <b>${money(t.stop)}</b> (-${t.stop_pct.toFixed(2)}%)</span>
       <span>Target 1 <b>${money(t.target1)}</b> (+${gain(t.target1)}, ${rr(t.rr_t1)})</span>
       <span>Target 2 <b>${money(t.target2)}</b> (+${gain(t.target2)}, ${rr(t.rr_t2)})</span>
-    </div>
+    </div>`}
     <div>Setup: <b>${escapeHtml(t.setup_type)}</b> | Confidence: ${conf} | Timeframe: ${escapeHtml(t.timeframe || loading)}</div>
     <div>Rationale: ${escapeHtml(t.rationale || loading)}</div>
     <div>Invalidation: ${escapeHtml(t.invalidation || `Close below ${money(t.stop)}`)}</div>
@@ -298,15 +334,15 @@ function setScanProgress(done, total, active) {
     active ? `Scanning ${Math.min(done + 1, total)}/${total}...` : `Scanned ${done}/${total}`;
 }
 
-const setMode = document.getElementById("set-mode");
-const setFixed = document.getElementById("set-fixed");
-const setAtr = document.getElementById("set-atr");
+const stopMult = document.getElementById("stopMult");
+const targetMult = document.getElementById("targetMult");
 
 function syncSettingsUi() {
-  document.getElementById("set-fixed-val").textContent = Number(setFixed.value).toFixed(1);
-  document.getElementById("set-atr-val").textContent = Number(setAtr.value).toFixed(1);
-  document.getElementById("set-fixed-wrap").style.display = setMode.value === "fixed" ? "" : "none";
-  document.getElementById("set-atr-wrap").style.display = setMode.value === "atr" ? "" : "none";
+  const sm = parseFloat(stopMult.value), tm = parseFloat(targetMult.value);
+  const rr = sm > 0 && tm > 0 ? tm / sm : 0;
+  const el = document.getElementById("rrDisplay");
+  el.textContent = `${rr.toFixed(2).replace(/0$/, "")}R${rr < 1.5 ? " FAIL" : ""}`;
+  el.style.color = rr < 1.5 ? "#e5534b" : "";
 }
 
 let settingsTimer = null;
@@ -319,9 +355,9 @@ function saveScanSettings() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          stop_mode: setMode.value,
-          stop_fixed_pct: parseFloat(setFixed.value),
-          atr_mult: parseFloat(setAtr.value)
+          stop_mode: "atr",
+          atr_stop_mult: parseFloat(stopMult.value),
+          atr_target_mult: parseFloat(targetMult.value)
         })
       });
       if (scanResults.length && !scanButton.disabled) runScan(scanResults.map(r => r.ticker));
@@ -329,14 +365,13 @@ function saveScanSettings() {
   }, 500);
 }
 
-if (setMode && setFixed && setAtr) {
+if (stopMult && targetMult) {
   fetch("/api/settings").then(r => r.json()).then(s => {
-    setMode.value = s.stop_mode;
-    setFixed.value = s.stop_fixed_pct;
-    setAtr.value = s.atr_mult;
+    stopMult.value = s.atr_stop_mult;
+    targetMult.value = s.atr_target_mult;
     syncSettingsUi();
   }).catch(syncSettingsUi);
-  [setMode, setFixed, setAtr].forEach(el => el.addEventListener("input", saveScanSettings));
+  [stopMult, targetMult].forEach(el => el.addEventListener("input", saveScanSettings));
 }
 
 async function runScan(tickerList) {
@@ -710,6 +745,12 @@ function renderMessages() {
   chatLog.innerHTML = "";
 
   const messages = chats[currentChatId].messages;
+  const countEl = document.getElementById("chat-count");
+  if (countEl) countEl.textContent = `${messages.length} message${messages.length === 1 ? "" : "s"}`;
+  if (!messages.length) {
+    chatLog.innerHTML = '<div class="empty-chat">New chat started - Ask anything about your 8/8 scanner, ATR 1.5x/3x system, or scaling plan</div>';
+    return;
+  }
 
   messages.forEach((msg, index) => {
     const next = messages[index + 1];
@@ -1043,11 +1084,25 @@ ttsToggleButton.onclick = () => {
 };
 
 newChatButton.onclick = newChat;
-clearChatButton.onclick = () => {
-  chats[currentChatId].messages = [];
+clearChatButton.title = "Clear chat (Ctrl+K)";
+function clearChat() {
+  const chat = chats[currentChatId];
+  const count = chat?.messages.length || 0;
+  if (!count) return;
+  if (!confirm(`Clear ${count} messages? This cannot be undone.`)) return;
+  chat.messages = [];
   saveChats();
+  renderChatList();
   renderMessages();
-};
+}
+clearChatButton.onclick = clearChat;
+
+document.addEventListener("keydown", e => {
+  if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "l")) {
+    e.preventDefault();
+    clearChat();
+  }
+});
 
 sidebarToggle.onclick = () => {
   document.getElementById("sidebar").classList.toggle("collapsed");
