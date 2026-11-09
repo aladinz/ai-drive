@@ -1,7 +1,7 @@
 """Mandatory swing-trade ticker qualification checklist (6 of 8 checks must pass).
 
 market_data keys (all optional; a missing value fails the check that needs it):
-    price, sma50, sma200, avg_volume_20d, volume, atr, rsi, market_cap, bid, ask,
+    price (regular-session quote for entry), sma50, sma200, avg_volume_20d, volume, atr, rsi, market_cap, bid, ask,
     lows (daily lows, oldest -> newest, at least 3), high, low, close,
     stop (planned stop price), target1 (or resistance), target2 (optional), events ([{"type": "earnings|split|fda", "date": "YYYY-MM-DD"}]).
 """
@@ -362,7 +362,7 @@ def check_rr(entry, stop_price, target1, atr, user_settings=None, target2=None):
 
 def _risk_reward(d):
     return check_rr(
-        _num(d.get("close")) or _num(d.get("price")),
+        _num(d.get("price")) or _num(d.get("close")),
         d.get("stop"), d.get("target1", d.get("resistance")),
         d.get("atr"), d.get("_settings"), d.get("target2"),
     )
@@ -395,7 +395,7 @@ def qualify_ticker(ticker, market_data, settings=None):
     fail_reasons = [f"{c['name']}: {c['reason']}" for c in checks if not c["pass"]]
     warnings = [f"R/R: TP2 {rr['rr_t2']:.2f}R < {MIN_REWARD_RISK:g}R"] if qualified and rr.get("rr_ok") is False else []
 
-    entry = _num(data.get("close", data.get("price"))) or _num(data.get("price"))
+    entry = _num(data.get("price")) or _num(data.get("close"))
     stop_pct = rr.get("stop_pct")
     rr_t1, rr_t2, rr_t3 = rr.get("rr_t1"), rr.get("rr_t2"), rr.get("rr_t3")
     stop_price = rr.get("stop_price")

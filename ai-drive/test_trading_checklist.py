@@ -71,6 +71,21 @@ class AtrLevelsTests(unittest.TestCase):
         self.assertAlmostEqual(result["target3_price"], 47.975)
         self.assertAlmostEqual(result["rr_t2"], 2.0)
 
+    def test_quote_price_drives_entry_and_atr_levels_instead_of_historical_close(self):
+        result = qualify_ticker("TEST", {
+            "price": 65.40, "close": 60.0, "sma50": 55, "sma200": 50,
+            "avg_volume_20d": 1_000_000, "volume": 2_000_000,
+            "atr": 2, "rsi": 55, "market_cap": 10_000_000_000,
+            "lows": [57, 58, 59], "high": 61, "low": 59, "events": [],
+        })
+
+        self.assertTrue(result["qualified"])
+        self.assertAlmostEqual(result["entry_price"], 65.40)
+        self.assertAlmostEqual(result["stop_price"], 62.40)
+        self.assertAlmostEqual(result["target1_price"], 69.40)
+        self.assertAlmostEqual(result["target2_price"], 71.40)
+        self.assertAlmostEqual(result["rr_t2"], 2.0)
+
 
 if __name__ == "__main__":
     unittest.main()

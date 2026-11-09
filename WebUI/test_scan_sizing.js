@@ -114,3 +114,14 @@ test("zero and invalid sizing never display the fixed default position", () => {
   assert.match(html, /Enter a non-negative account size/);
   assert.match(html, /data-taken="CHYM"[^>]*disabled/);
 });
+
+test("scan accepts Toronto ticker and labels its quote and chart", () => {
+  const { context } = createApp();
+  const run = code => vm.runInContext(code, context);
+  assert.equal(run('JSON.stringify(parseTickers("GFL GFL.TO BRK.B GFL.TO"))'), '["GFL","GFL.TO","BRK.B"]');
+  assert.equal(run('chartSymbol("GFL.TO")'), "TSX:GFL");
+  assert.equal(run('chartSymbol("GFL")'), "GFL");
+  run(`row.quote = { price: 65.4, currency: "CAD", exchange: "TOR", timestamp: 1793998799, market_state: "CLOSED" };`);
+  assert.match(run("tradeCardHtml(row)"), /Yahoo regular-session quote: \$65\.40 CAD · TOR/);
+  assert.match(run("tradeCardHtml(row)"), /CLOSED\. Quotes may be delayed/);
+});

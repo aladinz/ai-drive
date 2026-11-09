@@ -7,6 +7,7 @@ requirements: duckduckgo-search, yfinance
 """
 
 import json
+import math
 import os
 import sys
 import threading
@@ -102,14 +103,18 @@ class Tools:
         import yfinance as yf
 
         info = yf.Ticker(symbol).info or {}
-        price = info.get("currentPrice") or info.get("regularMarketPrice")
-        if price is None:
+        price = info.get("regularMarketPrice") or info.get("currentPrice")
+        if not isinstance(price, (int, float)) or isinstance(price, bool) or not math.isfinite(price) or price <= 0:
             return None
         data = {
             "symbol": symbol,
             "name": info.get("shortName") or info.get("longName") or symbol,
             "ma_20": self._ma_20(yf, symbol),
             "currentPrice": price,
+            "currency": info.get("currency"),
+            "exchange": info.get("exchange"),
+            "regularMarketTime": info.get("regularMarketTime"),
+            "marketState": info.get("marketState"),
             "previousClose": info.get("previousClose"),
             "open": info.get("open") or info.get("regularMarketOpen"),
             "dayHigh": info.get("dayHigh"),
@@ -135,7 +140,7 @@ class Tools:
         import yfinance as yf
 
         ticker = yf.Ticker(symbol)
-        hist = ticker.history(period="1y").dropna(subset=["Close", "High", "Low", "Volume"])
+        hist = ticker.history(period="1y", auto_adjust=False).dropna(subset=["Close", "High", "Low", "Volume"])
         if len(hist) < 30:
             return None
         close, high, low, vol = hist["Close"], hist["High"], hist["Low"], hist["Volume"]
@@ -150,7 +155,7 @@ class Tools:
         last_loss = float(loss.iloc[-1])
         rsi = 100.0 if last_loss == 0 else 100 - 100 / (1 + float(gain.iloc[-1]) / last_loss)
 
-        price = float(close.iloc[-1])
+        price = float(quote["currentPrice"])
         window_high = float(high.tail(120).max())
         year_high = float(high.max())
         info = {}
@@ -180,7 +185,14 @@ class Tools:
             "lows": [float(x) for x in low.tail(3)],
             "high": float(high.iloc[-1]),
             "low": float(low.iloc[-1]),
-            "close": price,
+            "close": float(close.iloc[-1]),
+            "quote": {
+                "price": price,
+                "currency": quote.get("currency"),
+                "exchange": quote.get("exchange"),
+                "timestamp": quote.get("regularMarketTime"),
+                "market_state": quote.get("marketState"),
+            },
             "target1": window_high if window_high > price else None,
             "target2": year_high if year_high > price and year_high != window_high else None,
             # Tight stop: the higher of the 5-day low and 1.5x ATR below price.

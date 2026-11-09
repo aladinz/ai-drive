@@ -111,13 +111,17 @@ function showChartError(container, ticker, message) {
   console.error(message);
   const frame = document.createElement("iframe");
   frame.className = "trade-chart-fallback";
-  frame.src = `https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(ticker)}&interval=D&theme=dark&hidesidetoolbar=1&style=1`;
+  frame.src = `https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(chartSymbol(ticker))}&interval=D&theme=dark&hidesidetoolbar=1&style=1`;
   frame.loading = "lazy";
   frame.title = `${ticker} chart`;
   const note = document.createElement("div");
   note.className = "chart-status";
   note.textContent = "Price-level lines are unavailable; the levels are listed above.";
   container.replaceChildren(frame, note);
+}
+
+function chartSymbol(ticker) {
+  return ticker.endsWith(".TO") ? `TSX:${ticker.slice(0, -3)}` : ticker;
 }
 
 function initializeTradeCharts() {
@@ -132,7 +136,7 @@ function initializeTradeCharts() {
       const id = container.id;
       try {
         const widget = new window.TradingView.widget({
-          symbol: row.chart.ticker,
+          symbol: chartSymbol(row.chart.ticker),
           interval: "D",
           timezone: "Etc/UTC",
           theme: "dark",
@@ -194,7 +198,7 @@ function parseTickers(input) {
   return input.toUpperCase()
     .split(/[,\s\n]+/)
     .map(s => s.trim())
-    .filter(s => s.length > 0 && s.length <= 5 && !seen.has(s) && seen.add(s));
+    .filter(s => /^[A-Z][A-Z0-9-]{0,4}(?:\.[A-Z0-9]{1,4})?$/.test(s) && !seen.has(s) && seen.add(s));
 }
 
 function scanSort(a, b) {
@@ -407,7 +411,15 @@ function tradeCardHtml(r) {
   const checks = (r.checks || []).map(c =>
     `<span class="trade-check ${c.pass ? "ok" : "bad"}" title="${escapeHtml(c.reason)}">${c.pass ? "✓" : "✗"} ${escapeHtml(c.name)}</span>`
   ).join("");
+  const quote = r.quote;
+  const quoteTime = quote && Number.isFinite(quote.timestamp) && quote.timestamp > 0
+    ? new Date(quote.timestamp * 1000).toLocaleString()
+    : "time unavailable";
+  const quoteDetails = quote
+    ? `Yahoo regular-session quote: ${money(quote.price)} ${escapeHtml(quote.currency || "currency unavailable")} · ${escapeHtml(quote.exchange || "exchange unavailable")} · ${escapeHtml(quoteTime)} · ${escapeHtml(quote.market_state || "market state unavailable")}. Quotes may be delayed.`
+    : "Quote details unavailable.";
   return `<div class="trade-card">
+    <div>${quoteDetails}</div>
     ${plan ? renderScalingPlan(plan, r.ticker) : `<div class="trade-levels">
       <span>Entry <b>${money(t.entry)}</b></span>
       <span>Stop <b>${money(t.stop)}</b> (-${t.stop_pct.toFixed(2)}%)</span>

@@ -283,6 +283,13 @@ setup's whole-share position: `floor(account × risk% ÷ 100 ÷ (entry − stop)
 The scaling plan, copied plan, and journal use that same position size. Changing either
 input updates the displayed scaling plan; a position smaller than one share shows zero
 shares. Position sizing is based on risk and does not cap the position at the account balance.
+The scanner uses Yahoo's regular-session quote for the entry and displays its exchange,
+currency, market state and quote time; quotes may be delayed and outside trading hours
+normally reflect the last regular session, not the pre-market or after-hours price.
+Use Yahoo suffixes to select other listings: `GFL` is the US listing in USD, while
+`GFL.TO` is the Toronto listing in CAD. Enter account size in the listing's currency.
+The Toronto chart is mapped to the TSX listing. Historical OHLC data is unadjusted for
+dividends to keep it on the same price basis as the quote.
 
 **Tool-name aliases:** if the model invents names, `serve_webui.py` rewrites them: `get_live_data`, `get_stock_data`, `fetch_price`, `calculate_triggers` and `setup` all run `yahoo_finance` (a missing symbol reuses the last ticker). The same applies when the model prints a tool call as plain text instead of calling it, even inside prose. Unknown names with a `symbol` or `query` argument go to `yahoo_finance` / `web_search`; other unknown names are ignored. `"null"`/empty arguments are dropped, and arguments a tool does not accept are ignored.
 

@@ -543,7 +543,7 @@ def quick_trade_reply(candidates, payload, headers, qual, data):
 
 
 MAX_SCAN_TICKERS = 50
-TICKER_TOKEN = re.compile(r"[A-Z][A-Z0-9.-]{0,4}")
+TICKER_TOKEN = re.compile(r"[A-Z][A-Z0-9-]{0,4}(?:\.[A-Z0-9]{1,4})?")
 
 
 def parse_input(text):
@@ -674,6 +674,7 @@ def qualify_and_generate(ticker, candidates=None, headers=None, commentary=False
         market_data = _tools.qualification_data(ticker)
         if not market_data:
             raise RuntimeError("no market data")
+        row["quote"] = market_data.get("quote")
         qual = qualify_ticker(ticker, market_data, load_settings())
         cfg = qual.get("settings") or {}
         rr_chk = next((c for c in qual["checks"] if c["name"] == "R/R"), {})
