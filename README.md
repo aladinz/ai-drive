@@ -278,6 +278,12 @@ When the chat goes through the WebUI server (`E:\WebUI\serve_webui.py`, port 809
 - `risk` is the account risk fraction (default `0.015` = 1.5%); it also sets the stop buffer below the day's low (risk ÷ 2, so 1.5% → 0.75%). A value ≥ 1 is read as a percent (`2` → 2%).
 - `account` (dollars, optional): when given, the setup adds `position_size_shares = account × risk ÷ (entry − stop)`, plus `risk_dollars` and `position_value`.
 
+In the multi-ticker scan, the account size and risk percentage determine each qualified
+setup's whole-share position: `floor(account × risk% ÷ 100 ÷ (entry − stop))`.
+The scaling plan, copied plan, and journal use that same position size. Changing either
+input updates the displayed scaling plan; a position smaller than one share shows zero
+shares. Position sizing is based on risk and does not cap the position at the account balance.
+
 **Tool-name aliases:** if the model invents names, `serve_webui.py` rewrites them: `get_live_data`, `get_stock_data`, `fetch_price`, `calculate_triggers` and `setup` all run `yahoo_finance` (a missing symbol reuses the last ticker). The same applies when the model prints a tool call as plain text instead of calling it, even inside prose. Unknown names with a `symbol` or `query` argument go to `yahoo_finance` / `web_search`; other unknown names are ignored. `"null"`/empty arguments are dropped, and arguments a tool does not accept are ignored.
 
 How it works: for non-streaming `POST /v1/chat/completions` requests whose last message mentions stocks, prices, news, search, etc., `serve_webui.py` adds the tool definitions, runs any tool calls the model makes (up to 3 rounds), feeds the results back, and returns the final answer. If the model repeats a call it already has results for, the server forces a plain-text answer. Other messages, streaming requests, or any failure in this path use the plain proxy. `app.js` is unchanged.

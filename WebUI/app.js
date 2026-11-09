@@ -228,6 +228,39 @@ function money(v) {
   return typeof v === "number" ? `$${v.toFixed(2)}` : "n/a";
 }
 
+function positionSize(setup) {
+  const accountInput = document.getElementById("scan-account");
+  const riskInput = document.getElementById("scan-risk");
+  const account = Number(accountInput.value);
+  const riskPct = Number(riskInput.value);
+  const perShare = setup.entry - setup.stop;
+  if (!accountInput.value || !riskInput.value || !Number.isFinite(account) || account < 0 ||
+      !Number.isFinite(riskPct) || riskPct < 0.1 || riskPct > 5 || !Number.isFinite(perShare) || perShare <= 0) {
+    return null;
+  }
+  const shares = Math.floor(account * riskPct / 100 / perShare);
+  return Number.isSafeInteger(shares) ? { account, riskPct, shares } : null;
+}
+
+function sizeScalingPlan(plan, shares) {
+  const tp1Shares = Math.floor(shares * (plan.tp1.pct / 100));
+  const tp2Shares = Math.floor(shares * (plan.tp2.pct / 100));
+  const target = (tp, count) => ({
+    ...tp, shares: count, profit: (tp.price - plan.entry) * count
+  });
+  const tp1 = target(plan.tp1, tp1Shares);
+  const tp2 = target(plan.tp2, tp2Shares);
+  const tp3 = target(plan.tp3, shares - tp1Shares - tp2Shares);
+  const totalProfit = tp1.profit + tp2.profit + tp3.profit;
+  const initialRisk = (plan.entry - plan.stop) * shares;
+  const blendedRr = initialRisk > 0 ? totalProfit / initialRisk : 0;
+  return {
+    ...plan, total_shares: shares, initial_risk_dollars: initialRisk,
+    tp1, tp2, tp3, total_profit: totalProfit,
+    blended_rr: blendedRr, blended_rr_display: `1:${blendedRr.toFixed(2)}`
+  };
+}
+
 function renderScalingPlan(plan, ticker) {
   if (!plan) return "";
   const m = v => `$${v.toFixed(2)}`;
@@ -287,7 +320,7 @@ async function updateScaling(ticker, tp1Mult) {
     entry: row.chart.entry,
     atr: row.chart.atr,
     shares: plan.total_shares,
-    stop_mult: parseFloat(stopMult.value) || 1.5,
+    stop_mult: (plan.entry - plan.stop) / plan.atr,
     tp1: tp1Mult,
     tp2: plan.tp2.mult,
     tp3: plan.tp3.mult
@@ -316,7 +349,7 @@ async function updateScaling(ticker, tp1Mult) {
     const rrCheck = row.checks.find(check => check.name === "R/R");
     if (rrCheck) {
       const stopPct = (result.entry - result.stop) / result.entry * 100;
-      const detail = `ATR ${result.atr.toFixed(2)} Stop ${params.get("stop_mult")}x=${stopPct.toFixed(2)}% TP1 ${tp1Mult}x TP2 ${result.tp2.mult}x TP3 ${result.tp3.mult}x R/R ${ratios[1].toFixed(2)}R`;
+      const detail = `ATR ${result.atr.toFixed(2)} Effective stop ${Number(params.get("stop_mult")).toFixed(2)}x=${stopPct.toFixed(2)}% TP1 ${tp1Mult}x TP2 ${result.tp2.mult}x TP3 ${result.tp3.mult}x R/R ${ratios[1].toFixed(2)}R`;
       rrCheck.value = rrCheck.reason = rrCheck.detail = detail;
     }
     if (row.levels) {
@@ -335,8 +368,13 @@ async function updateScaling(ticker, tp1Mult) {
 
 async function copyScalingPlan(ticker, button) {
   const row = scanResults.find(result => result.ticker === ticker);
-  if (!row?.scaling_plan) return;
-  const plan = row.scaling_plan;
+  if (!row?.scaling_plan || !row.trade_setup) return;
+  const position = positionSize(row.trade_setup);
+  if (!position) {
+    button.textContent = "Invalid account or risk";
+    return;
+  }
+  const plan = sizeScalingPlan(row.scaling_plan, position.shares);
   const text = [
     `${ticker} swing scaling plan`,
     `Entry: $${plan.entry.toFixed(2)} | Stop: $${plan.stop.toFixed(2)} | ATR: $${plan.atr.toFixed(2)}`,
@@ -357,10 +395,8 @@ async function copyScalingPlan(ticker, button) {
 
 function tradeCardHtml(r) {
   const t = r.trade_setup;
-  const account = parseFloat(document.getElementById("scan-account")?.value) || 0;
-  const riskPct = parseFloat(document.getElementById("scan-risk")?.value) || 1;
-  const perShare = t.entry - t.stop;
-  const shares = account > 0 && perShare > 0 ? Math.floor((account * riskPct / 100) / perShare) : 0;
+  const position = positionSize(t);
+  const plan = position && r.scaling_plan ? sizeScalingPlan(r.scaling_plan, position.shares) : null;
   const taken = loadTrades().some(x => x.ticker === r.ticker && x.date === todayKey());
   const chartId = `tv-chart-${escapeHtml(r.ticker)}`;
   const rr = v => (typeof v === "number" ? `${v.toFixed(2)}R` : "n/a");
@@ -372,7 +408,7 @@ function tradeCardHtml(r) {
     `<span class="trade-check ${c.pass ? "ok" : "bad"}" title="${escapeHtml(c.reason)}">${c.pass ? "✓" : "✗"} ${escapeHtml(c.name)}</span>`
   ).join("");
   return `<div class="trade-card">
-    ${r.scaling_plan ? renderScalingPlan(r.scaling_plan, r.ticker) : `<div class="trade-levels">
+    ${plan ? renderScalingPlan(plan, r.ticker) : `<div class="trade-levels">
       <span>Entry <b>${money(t.entry)}</b></span>
       <span>Stop <b>${money(t.stop)}</b> (-${t.stop_pct.toFixed(2)}%)</span>
       <span>TP1 <b>${money(t.target1)}</b> (+${gain(t.target1)}, ${rr(t.rr_t1)})</span>
@@ -382,8 +418,9 @@ function tradeCardHtml(r) {
     <div>Setup: <b>${escapeHtml(t.setup_type)}</b> | Confidence: ${conf} | Timeframe: ${escapeHtml(t.timeframe || loading)}</div>
     <div>Rationale: ${escapeHtml(t.rationale || loading)}</div>
     <div>Invalidation: ${escapeHtml(t.invalidation || `Close below ${money(t.stop)}`)}</div>
-    <div>Risk Calculator: Account $${account.toLocaleString()} x ${riskPct}% = $${(account * riskPct / 100).toFixed(0)} risk => <b>${shares}</b> shares ($${(shares * t.entry).toLocaleString(undefined, { maximumFractionDigits: 0 })})</div>
-    <label class="trade-taken"><input type="checkbox" data-taken="${escapeHtml(r.ticker)}" ${taken ? "checked" : ""}> Taken (save to journal)</label>
+    ${position ? `<div>Risk Calculator: Account $${position.account.toLocaleString()} x ${position.riskPct}% = $${(position.account * position.riskPct / 100).toFixed(0)} risk => <b>${position.shares}</b> shares ($${(position.shares * t.entry).toLocaleString(undefined, { maximumFractionDigits: 0 })})</div>`
+      : `<div class="trade-warn">Enter a non-negative account size and risk between 0.1% and 5% with a valid entry and stop to calculate position size.</div>`}
+    <label class="trade-taken"><input type="checkbox" data-taken="${escapeHtml(r.ticker)}" ${taken ? "checked" : ""} ${!position && !taken ? "disabled" : ""}> Taken (save to journal)</label>
     <div class="trade-checks">${checks}</div>
     ${warn}
     <div class="chart-levels" aria-label="Chart price levels">
@@ -407,13 +444,13 @@ function setTaken(ticker, on) {
   let trades = loadTrades().filter(x => !(x.ticker === ticker && x.date === todayKey()));
   if (on && row && row.trade_setup) {
     const t = row.trade_setup;
-    const account = parseFloat(document.getElementById("scan-account")?.value) || 0;
-    const riskPct = parseFloat(document.getElementById("scan-risk")?.value) || 1;
-    const shares = t.entry > t.stop ? Math.floor((account * riskPct / 100) / (t.entry - t.stop)) : 0;
+    const position = positionSize(t);
+    if (!position) return;
     trades.push({
       date: todayKey(), ticker, score: row.score, setup_type: t.setup_type,
       entry: t.entry, stop: t.stop, target1: t.target1, target2: t.target2, target3: t.target3,
-      rr_t1: t.rr_t1, rr_t2: t.rr_t2, rr_t3: t.rr_t3, shares, account, risk_pct: riskPct
+      rr_t1: t.rr_t1, rr_t2: t.rr_t2, rr_t3: t.rr_t3,
+      shares: position.shares, account: position.account, risk_pct: position.riskPct
     });
   }
   localStorage.setItem(TRADES_KEY, JSON.stringify(trades));
@@ -467,7 +504,10 @@ async function loadSetupNotes(ticker) {
       body: JSON.stringify({ ticker })
     });
     const data = await res.json();
-    if (res.ok && data.trade_setup) row.trade_setup = data.trade_setup;
+    if (res.ok && data.trade_setup) {
+      const { setup_type, confidence, rationale, invalidation, timeframe } = data.trade_setup;
+      Object.assign(row.trade_setup, { setup_type, confidence, rationale, invalidation, timeframe });
+    }
   } catch (err) { /* keep the code-computed setup */ }
   scanLoading.delete(ticker);
   renderScanTable();
